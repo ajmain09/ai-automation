@@ -1,0 +1,4 @@
+"use client";
+
+import { useState } from "react";
+export function PageControls({ pageId, aiEnabled }: { pageId: string; aiEnabled: boolean }) { const [on, setOn] = useState(aiEnabled); const [loading, setLoading] = useState(false); async function toggle() { setLoading(true); const response = await fetch(`/api/pages/${pageId}/ai`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: !on }) }); if (response.ok) setOn(!on); setLoading(false); } return <div style={{ display: "flex", gap: 9, alignItems: "center" }}><span style={{ fontSize: 11, color: "var(--muted)" }}>AI {on ? "enabled" : "paused"}</span><button className={`toggle ${on ? "on" : ""}`} onClick={toggle} disabled={loading} aria-label="Toggle page AI" /><button className="button secondary" onClick={() => window.alert("Facebook connection will be available in Step 2.")}>Connect Facebook</button></div>; }

@@ -1,0 +1,397 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ConfigStatus {
+  DRAFT
+  LIVE
+  ARCHIVED
+}
+
+enum ConnectionStatus {
+  DISCONNECTED
+  PENDING
+  CONNECTED
+  ERROR
+}
+
+enum StockStatus {
+  IN_STOCK
+  LOW_STOCK
+  OUT_OF_STOCK
+  PREORDER
+}
+
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum IssueStatus {
+  OPEN
+  ACKNOWLEDGED
+  RESOLVED
+}
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
+model Admin {
+  id           String      @id @default(uuid()) @db.Uuid
+  email        String      @unique
+  passwordHash String
+  name         String?
+  lastLoginAt  DateTime?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  auditLogs    AuditLog[]
+}
+
+model Page {
+  id                  String                @id @default(uuid()) @db.Uuid
+  metaPageId          String?               @unique
+  name                String
+  slug                String                @unique
+  isActive            Boolean               @default(true)
+  aiEnabled           Boolean               @default(false)
+  connectionStatus    ConnectionStatus      @default(DISCONNECTED)
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
+  connection          PageConnection?
+  settings            PageSettings?
+  configurationVersions ConfigurationVersion[]
+  businessProfile     BusinessProfile?
+  knowledgeItems      KnowledgeItem[]
+  products            Product[]
+  customers           Customer[]
+  conversations       Conversation[]
+  messages            Message[]
+  webhookEvents       WebhookEvent[]
+  orderSessions       OrderSession[]
+  orders              Order[]
+  jobs                Job[]
+  outboundMessages    OutboundMessage[]
+  deliveryOutbox      DeliveryOutbox[]
+  aiRuns              AiRun[]
+  apiUsage            ApiUsage[]
+  issues              Issue[]
+  auditLogs           AuditLog[]
+}
+
+model PageConnection {
+  id              String           @id @default(uuid()) @db.Uuid
+  pageId          String           @unique @db.Uuid
+  status          ConnectionStatus @default(DISCONNECTED)
+  provider        String           @default("meta")
+  encryptedToken  String?
+  connectedAt     DateTime?
+  lastError       String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  page            Page             @relation(fields: [pageId], references: [id], onDelete: Cascade)
+}
+
+model PageSettings {
+  id                 String   @id @default(uuid()) @db.Uuid
+  pageId             String   @unique @db.Uuid
+  currency           String   @default("USD")
+  countryCode        String   @default("US")
+  defaultLanguage    String   @default("en")
+  tone               String   @default("helpful")
+  requiredOrderFields Json
+  globalAiPaused     Boolean  @default(false)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  page               Page     @relation(fields: [pageId], references: [id], onDelete: Cascade)
+}
+
+model ConfigurationVersion {
+  id          String       @id @default(uuid()) @db.Uuid
+  pageId      String       @db.Uuid
+  version     Int
+  status      ConfigStatus @default(DRAFT)
+  label       String?
+  rawBusinessInfo String?
+  publishedAt DateTime?
+  createdAt   DateTime     @default(now())
+  page        Page         @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  @@unique([pageId, version])
+  @@index([pageId, status])
+}
+
+model BusinessProfile {
+  id                 String   @id @default(uuid()) @db.Uuid
+  pageId             String   @unique @db.Uuid
+  businessName       String?
+  description        String?
+  benefits           Json?
+  deliveryPolicy     String?
+  codPolicy          String?
+  faq                Json?
+  policies           Json?
+  salesInstructions  String?
+  orderRequirements  Json?
+  notes              String?
+  updatedAt          DateTime @updatedAt
+  createdAt          DateTime @default(now())
+  page               Page     @relation(fields: [pageId], references: [id], onDelete: Cascade)
+}
+
+model KnowledgeItem {
+  id          String   @id @default(uuid()) @db.Uuid
+  pageId      String   @db.Uuid
+  title       String
+  content     String
+  source      String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  page        Page     @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  @@index([pageId])
+}
+
+model Product {
+  id          String    @id @default(uuid()) @db.Uuid
+  pageId      String    @db.Uuid
+  name        String
+  slug        String
+  description String?
+  benefits    Json?
+  tags        Json?
+  active      Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  page        Page      @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  variants    ProductVariant[]
+  @@unique([pageId, slug])
+  @@index([pageId, active])
+}
+
+model ProductVariant {
+  id           String      @id @default(uuid()) @db.Uuid
+  productId    String      @db.Uuid
+  sku          String
+  size         String?
+  color        String?
+  currentPrice Decimal     @db.Decimal(12, 2)
+  oldPrice     Decimal?    @db.Decimal(12, 2)
+  stockStatus  StockStatus @default(IN_STOCK)
+  active       Boolean     @default(true)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  product      Product     @relation(fields: [productId], references: [id], onDelete: Cascade)
+  @@unique([productId, sku])
+  @@index([productId, active])
+}
+
+model Customer {
+  id          String          @id @default(uuid()) @db.Uuid
+  pageId      String          @db.Uuid
+  facebookPsid String
+  name        String?
+  phone       String?
+  address     String?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  page        Page            @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  memory      CustomerMemory?
+  conversations Conversation[]
+  orders      Order[]
+  @@unique([pageId, facebookPsid])
+  @@index([pageId])
+}
+
+model CustomerMemory {
+  id          String   @id @default(uuid()) @db.Uuid
+  customerId  String   @unique @db.Uuid
+  memory      Json
+  updatedAt   DateTime @updatedAt
+  customer    Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+}
+
+model Conversation {
+  id          String    @id @default(uuid()) @db.Uuid
+  pageId      String    @db.Uuid
+  customerId  String?   @db.Uuid
+  providerId  String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  page        Page      @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  customer    Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  messages    Message[]
+  @@unique([pageId, providerId])
+  @@index([pageId])
+}
+
+model Message {
+  id             String          @id @default(uuid()) @db.Uuid
+  pageId         String          @db.Uuid
+  conversationId String          @db.Uuid
+  providerId     String
+  direction      MessageDirection
+  text           String?
+  createdAt      DateTime        @default(now())
+  page            Page            @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  conversation    Conversation    @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  @@unique([pageId, providerId])
+  @@index([pageId, createdAt])
+}
+
+model WebhookEvent {
+  id         String   @id @default(uuid()) @db.Uuid
+  pageId     String?  @db.Uuid
+  providerId String   @unique
+  payload    Json
+  receivedAt DateTime @default(now())
+  processedAt DateTime?
+  page       Page?    @relation(fields: [pageId], references: [id], onDelete: SetNull)
+}
+
+model OrderSession {
+  id         String   @id @default(uuid()) @db.Uuid
+  pageId     String   @db.Uuid
+  customerId String?  @db.Uuid
+  state      Json
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  page       Page     @relation(fields: [pageId], references: [id], onDelete: Cascade)
+}
+
+model Order {
+  id          String     @id @default(uuid()) @db.Uuid
+  pageId      String     @db.Uuid
+  customerId  String?    @db.Uuid
+  status      String     @default("draft")
+  total       Decimal?   @db.Decimal(12, 2)
+  payload     Json
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  page        Page       @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  customer    Customer?  @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  revisions   OrderRevision[]
+}
+
+model OrderRevision {
+  id        String   @id @default(uuid()) @db.Uuid
+  orderId   String   @db.Uuid
+  revision  Int
+  payload   Json
+  createdAt DateTime @default(now())
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  @@unique([orderId, revision])
+}
+
+model Job {
+  id          String    @id @default(uuid()) @db.Uuid
+  pageId      String?   @db.Uuid
+  type        String
+  status      JobStatus @default(PENDING)
+  payload     Json?
+  attempts    Int       @default(0)
+  runAt       DateTime  @default(now())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  page        Page?     @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  @@index([status, runAt])
+}
+
+model OutboundMessage {
+  id                String   @id @default(uuid()) @db.Uuid
+  pageId            String   @db.Uuid
+  outboundAttemptKey String   @unique
+  providerMessageId String?
+  payload           Json
+  createdAt         DateTime @default(now())
+  page              Page     @relation(fields: [pageId], references: [id], onDelete: Cascade)
+}
+
+model DeliveryOutbox {
+  id          String   @id @default(uuid()) @db.Uuid
+  pageId      String   @db.Uuid
+  deliveryKey String   @unique
+  payload     Json
+  sentAt      DateTime?
+  createdAt   DateTime @default(now())
+  page        Page     @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  attempts    DeliveryAttempt[]
+}
+
+model DeliveryAttempt {
+  id             String         @id @default(uuid()) @db.Uuid
+  deliveryOutboxId String       @db.Uuid
+  success        Boolean
+  response       Json?
+  attemptedAt    DateTime       @default(now())
+  deliveryOutbox DeliveryOutbox @relation(fields: [deliveryOutboxId], references: [id], onDelete: Cascade)
+}
+
+model AiRun {
+  id          String   @id @default(uuid()) @db.Uuid
+  pageId      String   @db.Uuid
+  attemptId   String
+  provider    String
+  model       String?
+  status      String
+  inputTokens Int?
+  outputTokens Int?
+  createdAt   DateTime @default(now())
+  page        Page     @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  apiUsage    ApiUsage?
+  @@unique([pageId, attemptId])
+}
+
+model ApiUsage {
+  id          String   @id @default(uuid()) @db.Uuid
+  pageId      String   @db.Uuid
+  aiAttemptId String   @unique @db.Uuid
+  provider    String
+  model       String?
+  inputTokens Int      @default(0)
+  outputTokens Int     @default(0)
+  estimatedCost Decimal? @db.Decimal(12, 6)
+  createdAt   DateTime @default(now())
+  page        Page     @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  aiRun       AiRun    @relation(fields: [aiAttemptId], references: [id], onDelete: Cascade)
+  @@index([pageId, createdAt])
+}
+
+model Issue {
+  id          String      @id @default(uuid()) @db.Uuid
+  pageId      String?     @db.Uuid
+  status      IssueStatus @default(OPEN)
+  severity    String      @default("medium")
+  title       String
+  description String?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  page        Page?       @relation(fields: [pageId], references: [id], onDelete: SetNull)
+  @@index([pageId, status])
+}
+
+model AuditLog {
+  id        String   @id @default(uuid()) @db.Uuid
+  adminId   String?  @db.Uuid
+  pageId    String?  @db.Uuid
+  action    String
+  metadata  Json?
+  createdAt DateTime @default(now())
+  admin     Admin?   @relation(fields: [adminId], references: [id], onDelete: SetNull)
+  page      Page?    @relation(fields: [pageId], references: [id], onDelete: SetNull)
+  @@index([pageId, createdAt])
+}
+
+model SystemSetting {
+  id        String   @id @default(uuid()) @db.Uuid
+  key       String   @unique
+  value     Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}

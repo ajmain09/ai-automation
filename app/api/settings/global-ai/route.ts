@@ -1,0 +1,5 @@
+import { NextResponse } from "next/server";
+import { requireAdmin } from "@/lib/auth/session";
+import { prisma } from "@/lib/db/prisma";
+import { z } from "zod";
+export async function POST(request: Request) { const admin = await requireAdmin(); const parsed = z.object({ paused: z.boolean() }).safeParse(await request.json()); if (!parsed.success) return NextResponse.json({ error: "Invalid setting." }, { status: 400 }); await prisma.systemSetting.upsert({ where: { key: "global_ai_paused" }, update: { value: parsed.data.paused }, create: { key: "global_ai_paused", value: parsed.data.paused } }); await prisma.auditLog.create({ data: { adminId: admin.id, action: parsed.data.paused ? "global_ai.paused" : "global_ai.resumed" } }); return NextResponse.json({ ok: true, paused: parsed.data.paused }); }
