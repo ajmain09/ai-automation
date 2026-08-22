@@ -11,4 +11,10 @@ Identity and idempotency constraints include:
 - `delivery_outbox.delivery_key` unique
 - `outbound_messages.outbound_attempt_key` unique
 
-Internal identifiers are UUIDs. All business-facing relations include `pageId` where the data is page-owned. PostgreSQL is the only required stateful service; Redis is intentionally not used.
+Internal identifiers are UUIDs. All business-facing relations include `pageId` where the data is page-owned. `OAuthState` stores only a short-lived hash and encrypted temporary user token. `Conversation.version` protects against stale replies; `Job` stores lease, retry, TTL, idempotency, and dead-letter state. `OutboundMessage` records delivery uncertainty instead of blindly retrying timeouts.
+
+`ConfigurationVersion.businessData` contains parsed/manual draft data. Publishing is the only operation that materializes it into the live `BusinessProfile` and catalog. Critical parsed conflicts block publishing.
+
+`ApiUsage` stores provider, model, call type, token totals, provider usage, request ID, attempt number, rate snapshots, cost, status, and latency. It is the sole analytics data set and is always scoped by `pageId`.
+
+PostgreSQL is the only required stateful service; Redis is intentionally not used. Live migration application is deferred to the VPS because local PostgreSQL is unavailable.

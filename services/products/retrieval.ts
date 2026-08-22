@@ -1,0 +1,14 @@
+import { prisma } from "@/lib/db/prisma";
+
+export type RetrievedProduct = { id: string; name: string; description: string | null; tags: string[]; variants: Array<{ id: string; sku: string; size: string | null; color: string | null; currentPrice: string; oldPrice: string | null; stockStatus: string }> };
+const words = (text: string) => [...new Set(text.toLocaleLowerCase().split(/[^\p{L}\p{N}]+/u).filter((word) => word.length > 2))];
+
+export function rankProducts<T extends { id: string; name: string; description?: string | null; tags?: unknown }>(products: T[], query: string, limit = 8) {
+  const terms = words(query);
+  return products.map((product) => { const haystack = `${product.name} ${product.description ?? ""} ${Array.isArray(product.tags) ? product.tags.join(" ") : ""}`.toLocaleLowerCase(); const score = terms.reduce((sum, term) => sum + (haystack.includes(term) ? 1 : 0), 0); return { product, score }; }).filter((item) => item.score > 0).sort((a, b) => b.score - a.score).slice(0, limit).map((item) => item.product);
+}
+
+export async function retrieveRelevantProducts(pageId: string, query: string, limit = 8): Promise<RetrievedProduct[]> {
+  const products = await prisma.product.findMany({ where: { pageId, active: true }, include: { variants: { where: { active: true }, orderBy: { currentPrice: "asc" } } }, take: 200 });
+  return rankProducts(products, query, limit).map((product) => ({ id: product.id, name: product.name, description: product.description, tags: Array.isArray(product.tags) ? product.tags.map(String) : [], variants: product.variants.map((variant) => ({ id: variant.id, sku: variant.sku, size: variant.size, color: variant.color, currentPrice: variant.currentPrice.toString(), oldPrice: variant.oldPrice?.toString() ?? null, stockStatus: variant.stockStatus })) }));
+}
