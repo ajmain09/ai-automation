@@ -24,7 +24,7 @@ export function retryDelayMs(attempt: number, random = Math.random) {
 }
 
 export class InMemoryJobQueue implements JobQueue {
-  private jobs: Array<QueueJob & { status: JobStatus; leaseUntil?: Date }> = [];
+  private jobs: Array<QueueJob & { status: JobStatus; leaseUntil?: Date; lastError?: string }> = [];
   private sequence = 0;
   async enqueue<T>(input: EnqueueInput<T>) {
     const existing = input.idempotencyKey && this.jobs.find((job) => job.idempotencyKey === input.idempotencyKey);
@@ -36,6 +36,7 @@ export class InMemoryJobQueue implements JobQueue {
   async claim(workerId: string) {
     void workerId;
     const now = new Date();
+    for (const job of this.jobs) if (job.status === "RUNNING" && job.leaseUntil && job.leaseUntil <= now) { job.status = "PENDING"; job.leaseUntil = undefined; }
     const activeConversations = new Set(this.jobs.filter((job) => job.status === "RUNNING" && job.conversationId).map((job) => job.conversationId));
     const candidate = this.jobs.find((job) => job.status === "PENDING" && job.runAt <= now && (!job.expiresAt || job.expiresAt > now) && (!job.conversationId || !activeConversations.has(job.conversationId)));
     if (!candidate) return null;
@@ -44,7 +45,7 @@ export class InMemoryJobQueue implements JobQueue {
     return candidate;
   }
   async complete(id: string) { const job = this.jobs.find((item) => item.id === id); if (job) job.status = "SUCCEEDED"; }
-  async fail(id: string, error: string, now = new Date()) { const job = this.jobs.find((item) => item.id === id); if (!job) return; if (job.attempts >= job.maxAttempts) job.status = "DEAD_LETTER"; else { job.status = "PENDING"; job.runAt = new Date(now.getTime() + retryDelayMs(job.attempts)); } }
+  async fail(id: string, error: string, now = new Date()) { const job = this.jobs.find((item) => item.id === id); if (!job) return; job.lastError = error; job.leaseUntil = undefined; if (job.attempts >= job.maxAttempts) job.status = "DEAD_LETTER"; else { job.status = "PENDING"; job.runAt = new Date(now.getTime() + retryDelayMs(job.attempts)); } }
   async release(id: string) { const job = this.jobs.find((item) => item.id === id); if (job && job.status === "RUNNING") { job.status = "PENDING"; job.leaseUntil = undefined; } }
   async expire(now = new Date()) { let count = 0; for (const job of this.jobs) if (job.status === "PENDING" && job.expiresAt && job.expiresAt <= now) { job.status = "EXPIRED"; count++; } return count; }
   snapshot() { return this.jobs.map((job) => ({ ...job })); }

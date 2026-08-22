@@ -1,6 +1,6 @@
 # Architecture
 
-The application is a Next.js App Router application with TypeScript, Prisma, PostgreSQL, Zod validation, Pino logging, Argon2id password hashing, and HTTP-only signed session cookies. The CSS font stack prefers Geist when installed, then Noto Sans Bengali and system UI fallbacks; the build does not fetch fonts from the network.
+The application is a Next.js App Router application with TypeScript, Prisma, PostgreSQL, Zod validation, Pino logging, Argon2id password hashing, and HTTP-only signed session cookies. The production URL is `https://ai.growthifyx.space`; the required public callback and policy routes are `/api/meta/oauth/callback`, `/api/meta/webhook`, `/privacy`, and `/data-deletion`. The CSS font stack prefers Geist when installed, then Noto Sans Bengali and system UI fallbacks; the build does not fetch fonts from the network.
 
 The `app/` directory owns routes and route handlers. `components/` contains presentation and client interaction components. `lib/` contains cross-cutting infrastructure (environment validation, database client, auth, logging, encryption, validation). Domain operations live in `services/` and use Prisma transactions where state changes cross multiple tables. `worker/` is the job execution boundary.
 

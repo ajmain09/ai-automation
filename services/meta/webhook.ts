@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
 import { getEnv } from "@/lib/env";
@@ -32,7 +33,7 @@ export async function ingestMetaWebhook(rawBody: string, payload: unknown, queue
     if (!page) continue;
     for (const event of entry.messaging ?? []) {
       const message = event.message;
-      const providerId = message?.mid ?? `${entry.id}:${event.sender.id}:${event.timestamp ?? Date.now()}`;
+      const providerId = `${entry.id}:${message?.mid ?? crypto.createHash("sha256").update(JSON.stringify(event)).digest("hex")}`;
       const isSystemEvent = Boolean(event.delivery || event.read || (!message?.text && !message?.attachments?.length));
       const isSystemEcho = Boolean(message?.is_echo && (!env.META_APP_ID || message.app_id === env.META_APP_ID));
       const isManualEcho = Boolean(message?.is_echo && !isSystemEcho);
@@ -45,6 +46,7 @@ export async function ingestMetaWebhook(rawBody: string, payload: unknown, queue
           const conversation = await tx.conversation.upsert({ where: { pageId_providerId: { pageId: page.id, providerId: event.sender.id } }, update: {}, create: { pageId: page.id, providerId: event.sender.id, customerId: customer.id } });
           if (isManualEcho) {
             await tx.conversation.update({ where: { id: conversation.id }, data: { manualReplyUntil: new Date(Date.now() + 30_000), lastManualReplyAt: new Date() } });
+            await tx.webhookEvent.update({ where: { providerId }, data: { processedAt: new Date() } });
             return;
           }
           const updated = await tx.conversation.update({ where: { id: conversation.id }, data: { customerId: customer.id, version: { increment: 1 }, lastCustomerMessageAt: new Date() } });

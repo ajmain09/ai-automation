@@ -10,10 +10,13 @@ Identity and idempotency constraints include:
 - `api_usage.ai_attempt_id` unique
 - `delivery_outbox.delivery_key` unique
 - `outbound_messages.outbound_attempt_key` unique
+- Webhook fallback identities are deterministic and namespaced by Meta Page ID; manual echoes are recorded as processed events without entering AI processing.
 
 All page-owned business queries include `pageId`. Order confirmation snapshots store page, product/variant display truth, price, quantity, currency, customer identity, normalized/original phone, address, configuration version, and confirmation time. Revisions store event type and changed fields; historical data is not mutated by later catalog changes.
 
 `ConfigurationVersion.businessData` contains parsed/manual draft data. Publishing is the only operation that materializes it into the live `BusinessProfile` and catalog. Critical parsed conflicts block publishing, and readiness is required before a Page can go LIVE.
+
+Business and catalog edits create DRAFT configuration versions. Rollback rematerializes the selected version and deactivates catalog rows not present in that version; live order snapshots remain immutable.
 
 `ApiUsage` stores provider, model, call type, token totals, provider usage, request ID, attempt number, rate snapshots, estimated cost, status, and latency. It is the sole analytics dataset and is always scoped by `pageId`. Attempts are created before provider execution, so failed attempts remain visible.
 

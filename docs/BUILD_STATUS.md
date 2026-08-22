@@ -1,6 +1,6 @@
-# Build Status — Step 3
+# Build Status — Final release audit
 
-Status: COMPLETE for local code, schema, mocked-domain, and production-build validation. External runtime configuration remains deferred.
+Status: COMPLETE for local code, schema, mocked-domain, UI, security-boundary, and production-build validation. External runtime configuration remains deferred.
 
 Implemented:
 
@@ -9,15 +9,18 @@ Implemented:
 - Safe outbound final checks, attachment fallback, expired-job protection, AI attempt records created before provider execution, retry attempts, and page-scoped AI usage.
 - Lightweight retry/circuit-breaker primitives, health states, deterministic readiness checks, guarded go-live transition, configuration rollback, recovery-token service, and production backup/restore scripts.
 - Issues and Orders operator screens plus health/readiness API boundaries.
+- Canonical production URL and public privacy/data-deletion routes, strict production environment checks, same-origin protection for admin mutations, deterministic webhook fallback IDs, race-safe delivery claims, and monochrome operator UI.
+- Product and business edits remain draft-only; rollback rematerializes the selected page configuration and order processing validates the current live configuration and active variant.
 
 Verification:
 
+- Prisma format: PASS.
 - Prisma validate: PASS with `DATABASE_URL` set to the documented PostgreSQL URL shape.
 - Prisma generate: PASS.
-- ESLint: PASS.
+- ESLint: PASS with no errors or warnings.
 - TypeScript: PASS.
 - Vitest: PASS — 16 tests.
-- Next.js production build: PASS with the documented PostgreSQL URL placeholder; no database was contacted.
+- Next.js production build: PASS with the documented PostgreSQL URL shape; no database was contacted.
 
 DEFERRED TO VPS:
 

@@ -4,6 +4,7 @@ import { sendMetaMessage } from "@/services/meta/service";
 import { canSendReply } from "@/services/messaging/version";
 import { classifyFailure } from "@/services/resilience/retry";
 import { upsertActionableIssue } from "@/services/issues/service";
+import { Prisma } from "@prisma/client";
 
 export async function sendSafeReply(input: { pageId: string; conversationId: string; recipientPsid: string; text: string; generatedVersion: number; jobExpiresAt?: Date | null; outboundAttemptKey: string }) {
   const existing = await prisma.outboundMessage.findUnique({ where: { outboundAttemptKey: input.outboundAttemptKey } });
@@ -16,7 +17,13 @@ export async function sendSafeReply(input: { pageId: string; conversationId: str
   const live = await prisma.configurationVersion.findFirst({ where: { pageId: input.pageId, status: "LIVE" }, select: { version: true } });
   const configInvalid = !live || state.page.lifecycleStatus !== "LIVE";
   const payload = { recipient: input.recipientPsid, text: input.text };
-  const outbound = await prisma.outboundMessage.create({ data: { pageId: input.pageId, conversationId: input.conversationId, outboundAttemptKey: input.outboundAttemptKey, payload, status: paused || !check.ok || configInvalid ? "FAILED_PERMANENT" : "PENDING", lastError: paused ? "AI paused" : configInvalid ? "Live configuration unavailable" : check.ok ? null : check.reason } });
+  let outbound;
+  try {
+    outbound = await prisma.outboundMessage.create({ data: { pageId: input.pageId, conversationId: input.conversationId, outboundAttemptKey: input.outboundAttemptKey, payload, status: paused || !check.ok || configInvalid ? "FAILED_PERMANENT" : "PENDING", lastError: paused ? "AI paused" : configInvalid ? "Live configuration unavailable" : check.ok ? null : check.reason } });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") return prisma.outboundMessage.findUniqueOrThrow({ where: { outboundAttemptKey: input.outboundAttemptKey } });
+    throw error;
+  }
   if (paused || !check.ok || configInvalid) return outbound;
   if (!state.page.connection?.encryptedToken) return prisma.outboundMessage.update({ where: { id: outbound.id }, data: { status: "FAILED_PERMANENT", lastError: "Meta connection credential missing" } });
   await prisma.outboundMessage.update({ where: { id: outbound.id }, data: { status: "SENDING" } });
@@ -26,7 +33,8 @@ export async function sendSafeReply(input: { pageId: string; conversationId: str
   } catch (error) {
     const message = error instanceof Error ? error.message : "Meta send failed";
     const transient = classifyFailure(error) === "TRANSIENT";
-    if (!transient) await upsertActionableIssue({ pageId: input.pageId, type: "META_DELIVERY", title: "Messenger delivery requires attention", description: message.slice(0, 500), severity: "high", resolutionAction: "Reconnect the Page or correct the recipient/provider permission." });
-    return prisma.outboundMessage.update({ where: { id: outbound.id }, data: { status: transient && /timeout|abort|timed out/i.test(message) ? "UNKNOWN_DELIVERY" : transient ? "FAILED_RETRYABLE" : "FAILED_PERMANENT", lastError: message.slice(0, 500) } });
+    const unknownDelivery = transient && /timeout|abort|timed out/i.test(message);
+    await upsertActionableIssue({ pageId: input.pageId, type: "META_DELIVERY", title: unknownDelivery ? "Messenger delivery outcome is unknown" : "Messenger delivery requires attention", description: message.slice(0, 500), severity: "high", resolutionAction: unknownDelivery ? "Check Meta delivery logs before retrying to avoid a duplicate customer reply." : "Reconnect the Page or correct the recipient/provider permission." });
+    return prisma.outboundMessage.update({ where: { id: outbound.id }, data: { status: unknownDelivery ? "UNKNOWN_DELIVERY" : transient ? "FAILED_RETRYABLE" : "FAILED_PERMANENT", lastError: message.slice(0, 500) } });
   }
 }

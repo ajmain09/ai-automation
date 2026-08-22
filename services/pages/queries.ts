@@ -1,12 +1,14 @@
 import { prisma } from "@/lib/db/prisma";
 
 export async function getDashboardData() {
-  const [pages, live, products] = await Promise.all([
-    prisma.page.findMany({ orderBy: { createdAt: "asc" }, include: { _count: { select: { products: true } }, configurationVersions: { where: { status: "LIVE" }, take: 1 } } }),
-    prisma.configurationVersion.count({ where: { status: "LIVE" } }),
-    prisma.product.count(),
+  const month = new Date();
+  month.setUTCDate(1); month.setUTCHours(0, 0, 0, 0);
+  const [pages, usage] = await Promise.all([
+    prisma.page.findMany({ orderBy: { createdAt: "asc" } }),
+    prisma.apiUsage.groupBy({ by: ["pageId"], where: { createdAt: { gte: month } }, _count: { _all: true }, _sum: { totalTokens: true, estimatedCost: true } }),
   ]);
-  return { pages: pages.map((page) => ({ id: page.id, name: page.name, connectionStatus: page.connectionStatus, aiEnabled: page.aiEnabled, products: page._count.products, config: page.configurationVersions.length ? "Live" : "Draft" })), stats: { pages: pages.length, live, products } };
+  const usageByPage = new Map(usage.map((row) => [row.pageId, { calls: row._count._all, totalTokens: row._sum.totalTokens ?? 0, estimatedCost: Number(row._sum.estimatedCost ?? 0) }]));
+  return { pages: pages.map((page) => ({ id: page.id, name: page.name, connectionStatus: page.connectionStatus, aiEnabled: page.aiEnabled, usage: usageByPage.get(page.id) ?? { calls: 0, totalTokens: 0, estimatedCost: 0 } })) };
 }
 
 export async function getPages() { return prisma.page.findMany({ orderBy: { createdAt: "asc" }, include: { _count: { select: { products: true, customers: true, conversations: true } }, settings: true, configurationVersions: { orderBy: { version: "desc" }, take: 1 } } }); }

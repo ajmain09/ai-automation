@@ -14,8 +14,13 @@ export async function applyOrderSignal(input: { pageId: string; customerId: stri
 
   const facts = Object.fromEntries(input.result.fact_updates.filter((fact) => fact.operation !== "CLEAR").map((fact) => [fact.key.toLowerCase(), fact.value]));
   const recommendedProductId = input.result.recommended_product_ids[0];
-  const product = recommendedProductId ? await prisma.product.findFirst({ where: { id: recommendedProductId, pageId: input.pageId, active: true }, include: { variants: { where: { active: true }, orderBy: { createdAt: "asc" }, take: 1 } } }) : null;
-  const variant = product?.variants[0];
+  const product = recommendedProductId ? await prisma.product.findFirst({ where: { id: recommendedProductId, pageId: input.pageId, active: true }, include: { variants: { where: { active: true }, orderBy: { createdAt: "asc" } } } }) : null;
+  const variantFacts = new Map(input.result.fact_updates.map((fact) => [fact.key.trim().toLowerCase(), fact.value]));
+  const rawRequestedSku = variantFacts.get("sku");
+  const rawRequestedVariant = variantFacts.get("variant");
+  const requestedSku = typeof rawRequestedSku === "string" ? rawRequestedSku : undefined;
+  const requestedVariant = typeof rawRequestedVariant === "string" ? rawRequestedVariant : undefined;
+  const variant = product?.variants.length === 1 ? product.variants[0] : product?.variants.find((candidate) => candidate.sku === requestedSku || [candidate.size, candidate.color].filter(Boolean).join(" ").toLowerCase() === requestedVariant?.toLowerCase());
   const patch: Record<string, unknown> = {};
   if (typeof facts.name === "string") patch.customerName = facts.name;
   if (typeof facts.phone === "string") patch.phone = facts.phone;

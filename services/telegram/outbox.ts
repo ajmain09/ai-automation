@@ -5,9 +5,10 @@ import { formatOrderEvent, getTelegramDestination, TelegramBotApi, TelegramClien
 
 export async function processNextTelegramDelivery(client: TelegramClient = new TelegramBotApi()) {
   const now = new Date();
+  await prisma.deliveryOutbox.updateMany({ where: { status: "SENDING", leaseUntil: { lt: now } }, data: { status: "DEAD_LETTER", leaseUntil: null, lastError: "Delivery lease expired; manual review required before retry." } });
   const candidate = await prisma.deliveryOutbox.findFirst({ where: { status: { in: ["PENDING", "FAILED_RETRYABLE"] }, nextAttemptAt: { lte: now }, OR: [{ leaseUntil: null }, { leaseUntil: { lt: now } }] }, orderBy: { nextAttemptAt: "asc" } });
   if (!candidate) return null;
-  const claimed = await prisma.deliveryOutbox.updateMany({ where: { id: candidate.id, status: { in: ["PENDING", "FAILED_RETRYABLE"] } }, data: { status: "SENDING", attempts: { increment: 1 }, leaseUntil: new Date(now.getTime() + 60_000) } });
+  const claimed = await prisma.deliveryOutbox.updateMany({ where: { id: candidate.id, status: { in: ["PENDING", "FAILED_RETRYABLE"] }, OR: [{ leaseUntil: null }, { leaseUntil: { lt: now } }] }, data: { status: "SENDING", attempts: { increment: 1 }, leaseUntil: new Date(now.getTime() + 60_000) } });
   if (claimed.count !== 1) return null;
   const current = await prisma.deliveryOutbox.findUnique({ where: { id: candidate.id } });
   if (!current) return null;

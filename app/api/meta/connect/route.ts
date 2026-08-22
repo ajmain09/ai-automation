@@ -4,9 +4,11 @@ import { decryptCredential } from "@/lib/encryption/service";
 import { connectMetaPage, discoverPages, healthCheckMetaPage } from "@/services/meta/service";
 import { prisma } from "@/lib/db/prisma";
 import { z } from "zod";
+import { isSameOrigin } from "@/lib/auth/csrf";
 
 const schema = z.object({ pageId: z.string().uuid(), state: z.string().min(20), metaPageId: z.string().min(1).max(100) });
 export async function POST(request: Request) {
+  if (!isSameOrigin(request)) return NextResponse.json({ error: "Cross-site request rejected." }, { status: 403 });
   const admin = await requireAdmin();
   const parsed = schema.safeParse(await request.json());
   if (!parsed.success) return NextResponse.json({ error: "Invalid page connection request." }, { status: 400 });
@@ -15,9 +17,10 @@ export async function POST(request: Request) {
   if (!state?.encryptedUserToken || state.expiresAt < new Date()) return NextResponse.json({ error: "OAuth session expired." }, { status: 400 });
   const candidate = (await discoverPages(decryptCredential(state.encryptedUserToken))).find((page) => page.id === parsed.data.metaPageId);
   if (!candidate) return NextResponse.json({ error: "That Page is not available to this admin." }, { status: 403 });
+  const consumed = await prisma.oAuthState.updateMany({ where: { id: state.id, consumedAt: null }, data: { consumedAt: new Date(), encryptedUserToken: null } });
+  if (consumed.count !== 1) return NextResponse.json({ error: "OAuth session has already been used." }, { status: 409 });
   await connectMetaPage({ pageId: parsed.data.pageId, metaPageId: candidate.id, name: candidate.name, pageAccessToken: candidate.access_token });
   try { await healthCheckMetaPage(parsed.data.pageId); } catch { return NextResponse.json({ error: "Page credentials were saved but Meta health verification failed." }, { status: 502 }); }
-  await prisma.oAuthState.update({ where: { id: state.id }, data: { consumedAt: new Date(), encryptedUserToken: null } });
   await prisma.auditLog.create({ data: { adminId: admin.id, pageId: parsed.data.pageId, action: "meta.page_connected", metadata: { metaPageId: candidate.id } } });
   return NextResponse.json({ ok: true });
 }

@@ -1,39 +1,51 @@
 services:
   app:
     build: .
-    command: npm run dev
+    command: npm run start
     ports:
       - "3000:3000"
     environment:
-      DATABASE_URL: postgresql://growthifyx:change-me@postgres:5432/growthifyx?schema=public
-      SESSION_SECRET: replace-with-at-least-32-random-characters
-      APP_URL: http://localhost:3000
-      NODE_ENV: development
-      ADMIN_EMAIL: admin@example.com
-      ADMIN_PASSWORD: change-this-before-running-in-production
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in the deployment environment}
+      SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET in the deployment environment}
+      APP_URL: ${APP_URL:-https://ai.growthifyx.space}
+      NODE_ENV: ${NODE_ENV:-production}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:?Set ADMIN_EMAIL in the deployment environment}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in the deployment environment}
+      META_APP_ID: ${META_APP_ID:-}
+      META_APP_SECRET: ${META_APP_SECRET:-}
+      META_REDIRECT_URI: ${META_REDIRECT_URI:-https://ai.growthifyx.space/api/meta/oauth/callback}
+      META_GRAPH_VERSION: ${META_GRAPH_VERSION:-v23.0}
+      META_VERIFY_TOKEN: ${META_VERIFY_TOKEN:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-chat}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      DEEPSEEK_INPUT_RATE: ${DEEPSEEK_INPUT_RATE:-0}
+      DEEPSEEK_OUTPUT_RATE: ${DEEPSEEK_OUTPUT_RATE:-0}
     depends_on:
       postgres:
         condition: service_healthy
-    volumes:
-      - .:/app
-      - /app/node_modules
-      - /app/.next
   worker:
     build: .
     command: npx tsx worker/index.ts
     environment:
-      DATABASE_URL: postgresql://growthifyx:change-me@postgres:5432/growthifyx?schema=public
-      SESSION_SECRET: replace-with-at-least-32-random-characters
-      NODE_ENV: development
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in the deployment environment}
+      SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET in the deployment environment}
+      APP_URL: ${APP_URL:-https://ai.growthifyx.space}
+      NODE_ENV: ${NODE_ENV:-production}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-chat}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      DEEPSEEK_INPUT_RATE: ${DEEPSEEK_INPUT_RATE:-0}
+      DEEPSEEK_OUTPUT_RATE: ${DEEPSEEK_OUTPUT_RATE:-0}
     depends_on:
       postgres:
         condition: service_healthy
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: growthifyx
-      POSTGRES_PASSWORD: change-me
-      POSTGRES_DB: growthifyx
+      POSTGRES_USER: ${POSTGRES_USER:-growthifyx}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the deployment environment}
+      POSTGRES_DB: ${POSTGRES_DB:-growthifyx}
     ports:
       - "5432:5432"
     volumes:

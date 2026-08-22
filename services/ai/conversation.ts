@@ -40,9 +40,10 @@ export async function processConversationJob(job: QueueJob, provider = new DeepS
   if (!fresh) return;
   if (fresh.version !== conversation.version || (fresh.manualReplyUntil && fresh.manualReplyUntil > new Date())) return;
   await validateReferencedProducts(job.pageId, result.recommended_product_ids);
-  const orderResult = await applyOrderSignal({ pageId: job.pageId, customerId: conversation.customer.id, text: newest.text, result, requiredFields: Array.isArray(conversation.page.settings?.requiredOrderFields) ? conversation.page.settings.requiredOrderFields.map(String) : ["name", "phone", "address", "product", "variant", "quantity"], currency: conversation.page.settings?.currency ?? "USD", countryCode: conversation.page.settings?.countryCode ?? "US" });
+  const liveConfiguration = await prisma.configurationVersion.findFirst({ where: { pageId: job.pageId, status: "LIVE" }, select: { version: true } });
+  const orderResult = await applyOrderSignal({ pageId: job.pageId, customerId: conversation.customer.id, text: newest.text, result, requiredFields: Array.isArray(conversation.page.settings?.requiredOrderFields) ? conversation.page.settings.requiredOrderFields.map(String) : ["name", "phone", "address", "product", "variant", "quantity"], currency: conversation.page.settings?.currency ?? "USD", countryCode: conversation.page.settings?.countryCode ?? "US", configurationVersion: liveConfiguration?.version });
   const updatedMemory = markQuestionAsked(applyFactUpdates(memory, result.fact_updates), result.asked_question_key);
-  if (result.fact_updates.length || result.asked_question_key) await updateCustomerMemory({ pageId: job.pageId, customerId: conversation.customer.id, updates: result.fact_updates, askedQuestionKey: result.asked_question_key });
+  if (result.fact_updates.length || result.asked_question_key) await updateCustomerMemory({ pageId: job.pageId, customerId: conversation.customer.id, updates: result.fact_updates, askedQuestionKey: result.asked_question_key, countryCode: conversation.page.settings?.countryCode ?? "US" });
   void updatedMemory;
   await sendSafeReply({ pageId: job.pageId, conversationId: conversation.id, recipientPsid: conversation.customer.facebookPsid, text: orderResult?.reply ?? result.reply, generatedVersion: conversation.version, jobExpiresAt: job.expiresAt, outboundAttemptKey: `reply:${job.id}:${conversation.version}` });
 }

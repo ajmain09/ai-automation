@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
 import { AiResponse } from "@/lib/validation/ai";
+import { normalizePhone } from "@/services/orders/phone";
 
 export const memorySchema = z.object({
   knownFacts: z.record(z.string(), z.unknown()).default({}),
@@ -39,14 +40,15 @@ export function shouldAsk(memoryInput: unknown, key: string) {
   return !memory.semanticQuestionsAsked.includes(key) && memory.knownFacts[key] === undefined;
 }
 
-export async function updateCustomerMemory(input: { pageId: string; customerId: string; updates: AiResponse["fact_updates"]; askedQuestionKey?: string | null }) {
+export async function updateCustomerMemory(input: { pageId: string; customerId: string; updates: AiResponse["fact_updates"]; askedQuestionKey?: string | null; countryCode?: string }) {
   return prisma.$transaction(async (tx) => {
     const customer = await tx.customer.findFirst({ where: { id: input.customerId, pageId: input.pageId }, include: { memory: true } });
     if (!customer) throw new Error("Customer does not belong to page");
     let memory = applyFactUpdates(customer.memory?.memory, input.updates);
     memory = markQuestionAsked(memory, input.askedQuestionKey);
     const facts = memory.knownFacts;
-    await tx.customer.update({ where: { id: customer.id }, data: { name: typeof facts.name === "string" ? facts.name : undefined, phone: typeof facts.phone === "string" ? facts.phone : undefined, address: typeof facts.address === "string" ? facts.address : undefined } });
+    const normalizedPhone = typeof facts.phone === "string" ? normalizePhone(facts.phone, { countryCode: input.countryCode }) : null;
+    await tx.customer.update({ where: { id: customer.id }, data: { name: typeof facts.name === "string" ? facts.name : undefined, phone: normalizedPhone?.normalized, phoneOriginal: normalizedPhone?.original, address: typeof facts.address === "string" ? facts.address : undefined } });
     return tx.customerMemory.upsert({ where: { customerId: customer.id }, update: { memory: memory as unknown as import("@prisma/client").Prisma.InputJsonValue }, create: { customerId: customer.id, memory: memory as unknown as import("@prisma/client").Prisma.InputJsonValue } });
   });
 }

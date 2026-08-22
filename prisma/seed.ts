@@ -13,22 +13,7 @@ async function main() {
     create: { email, passwordHash: await argon2.hash(password, { type: argon2.argon2id }) },
   });
 
-  const page = await prisma.page.upsert({
-    where: { slug: "demo-page" },
-    update: {},
-    create: { name: "Your first Facebook Page", slug: "demo-page", aiEnabled: false },
-  });
-  await prisma.pageSettings.upsert({
-    where: { pageId: page.id },
-    update: {},
-    create: { pageId: page.id, requiredOrderFields: ["name", "phone", "address", "product", "variant", "quantity"] },
-  });
-  await prisma.configurationVersion.upsert({
-    where: { pageId_version: { pageId: page.id, version: 1 } },
-    update: {},
-    create: { pageId: page.id, version: 1, status: "DRAFT", label: "Initial draft" },
-  });
-  await prisma.auditLog.create({ data: { adminId: admin.id, pageId: page.id, action: "seed.completed" } });
+  await prisma.auditLog.create({ data: { adminId: admin.id, action: "seed.completed" } });
 }
 
 main().finally(() => prisma.$disconnect());

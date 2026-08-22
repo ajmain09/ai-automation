@@ -5,6 +5,7 @@ import { prisma } from "@/lib/db/prisma";
 import { AiResponse, BusinessParse, aiResponseSchema, businessParseSchema } from "@/lib/validation/ai";
 import { withProviderCircuit } from "@/services/resilience/retry";
 import { upsertActionableIssue } from "@/services/issues/service";
+import { redactSensitiveText } from "@/lib/logging/logger";
 
 export type ProviderUsage = { inputTokens?: number; outputTokens?: number; totalTokens?: number; raw?: unknown; requestId?: string };
 export type ProviderResult = { content: string; usage?: ProviderUsage };
@@ -77,7 +78,7 @@ export async function runStructuredAi<T extends AiResponse | BusinessParse>(inpu
       if (parsed.success) { await finishProviderAttempt({ handle: { ...handle, startedAt }, usage: result.usage, status: "SUCCEEDED" }); return parsed.data as T; }
       lastError = "Malformed structured AI output";
       await finishProviderAttempt({ handle: { ...handle, startedAt }, usage: result.usage, status: "FAILED", error: lastError });
-    } catch (error) { lastError = error instanceof Error ? error.message : "AI provider failure"; if (handle) await finishProviderAttempt({ handle: { ...handle, startedAt }, status: "FAILED", error: lastError }); else await recordProviderAttempt({ pageId: input.pageId, provider: input.provider, callType: attempt === 1 ? input.callType : "RETRY", attemptNumber: attempt, startedAt, status: "FAILED", error: lastError }); }
+    } catch (error) { lastError = redactSensitiveText(error instanceof Error ? error.message : "AI provider failure"); if (handle) await finishProviderAttempt({ handle: { ...handle, startedAt }, status: "FAILED", error: lastError }); else await recordProviderAttempt({ pageId: input.pageId, provider: input.provider, callType: attempt === 1 ? input.callType : "RETRY", attemptNumber: attempt, startedAt, status: "FAILED", error: lastError }); }
   }
   if (lastError) await upsertActionableIssue({ pageId: input.pageId, type: "AI_PROVIDER", title: "AI provider failed", description: lastError.slice(0, 500), severity: "high", resolutionAction: "Check provider credentials, circuit state, and rate configuration." });
   return input.fallback;

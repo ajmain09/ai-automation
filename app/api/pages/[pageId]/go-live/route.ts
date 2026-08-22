@@ -2,8 +2,10 @@ import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/auth/session";
 import { setPageLive } from "@/services/pages/readiness";
 import { z } from "zod";
+import { isSameOrigin } from "@/lib/auth/csrf";
 
 export async function POST(_request: Request, { params }: { params: Promise<{ pageId: string }> }) {
+  if (!isSameOrigin(_request)) return NextResponse.json({ error: "Cross-site request rejected." }, { status: 403 });
   const admin = await requireAdmin();
   const pageId = (await params).pageId;
   if (!z.string().uuid().safeParse(pageId).success) return NextResponse.json({ error: "Invalid Page." }, { status: 400 });

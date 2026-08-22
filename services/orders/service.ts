@@ -13,6 +13,7 @@ export async function getOrCreateOrderSession(input: { pageId: string; customerI
 
 export async function updateDraft(input: { pageId: string; customerId: string; patch: Partial<OrderDraft>; countryCode?: string }) {
   return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`${input.pageId}:${input.customerId}`}, 0))`;
     const session = await tx.orderSession.findFirst({ where: { pageId: input.pageId, customerId: input.customerId, status: "ACTIVE" }, orderBy: { updatedAt: "desc" } });
     const current = session ? session.state : emptyOrderDraft(`${input.pageId}:${input.customerId}:${Date.now()}`);
     const draft = updateOrderDraft(current, input.patch, { countryCode: input.countryCode });
@@ -23,6 +24,7 @@ export async function updateDraft(input: { pageId: string; customerId: string; p
 
 export async function confirmDraft(input: { pageId: string; customerId: string; product: ProductTruth; requiredFields: string[]; currency: string; configurationVersion?: number; countryCode?: string }) {
   return prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`${input.pageId}:${input.customerId}`}, 0))`;
     const session = await tx.orderSession.findFirst({ where: { pageId: input.pageId, customerId: input.customerId, status: "ACTIVE" }, orderBy: { updatedAt: "desc" } });
     if (!session) throw new Error("No active order draft");
     const draft = session.state as unknown as OrderDraft;
@@ -65,6 +67,7 @@ export async function reviseConfirmedOrder(input: { pageId: string; orderId: str
   return prisma.$transaction(async (tx) => {
     const order = await tx.order.findFirst({ where: { id: input.orderId, pageId: input.pageId } });
     if (!order) throw new Error("Order not found in page scope");
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${input.orderId}, 0))`;
     if (!['CONFIRMED', 'UPDATED'].includes(order.status)) throw new Error("Only confirmed orders can be updated");
     const revision = await tx.orderRevision.count({ where: { orderId: order.id } });
     const payload = { ...(order.payload as Record<string, unknown>), ...input.changes };
@@ -80,6 +83,7 @@ export async function cancelConfirmedOrder(input: { pageId: string; orderId: str
   return prisma.$transaction(async (tx) => {
     const order = await tx.order.findFirst({ where: { id: input.orderId, pageId: input.pageId } });
     if (!order) throw new Error("Order not found in page scope");
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${input.orderId}, 0))`;
     if (order.status === "CANCELLED") return order;
     if (!['CONFIRMED', 'UPDATED'].includes(order.status)) throw new Error("Only confirmed orders can be cancelled");
     const revision = await tx.orderRevision.count({ where: { orderId: order.id } });

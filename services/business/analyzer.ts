@@ -1,10 +1,11 @@
 import { AiCallType } from "@prisma/client";
 import { businessParseSchema, BusinessParse } from "@/lib/validation/ai";
 import { AiProvider, runStructuredAi } from "@/services/ai/provider";
+import { redactSensitiveText } from "@/lib/logging/logger";
 
 export async function analyzeBusiness(input: { pageId: string; rawBusinessInfo: string; provider: AiProvider }) {
   const fallback: BusinessParse = { business_profile: { business_name: null, description: null, benefits: [] }, products: [], policies: { delivery: null, cod: null, faq: [] }, sales_instructions: null, order_requirements: [], unknown_information: ["Business information could not be parsed; review the draft manually."], conflicts: [] };
-  return runStructuredAi({ pageId: input.pageId, provider: input.provider, callType: "BUSINESS_PARSE" as AiCallType, system: "Extract a reviewable business draft. Never invent missing facts. Return only JSON matching the schema.", user: input.rawBusinessInfo, schema: businessParseSchema, fallback });
+  return runStructuredAi({ pageId: input.pageId, provider: input.provider, callType: "BUSINESS_PARSE" as AiCallType, system: "Extract a reviewable business draft. Never invent missing facts. Return only JSON matching the schema.", user: redactSensitiveText(input.rawBusinessInfo), schema: businessParseSchema, fallback });
 }
 
 export function normalizeBusinessParse(parsed: BusinessParse): BusinessParse {

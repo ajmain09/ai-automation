@@ -4,8 +4,10 @@ import { businessSetupSchema } from "@/lib/validation/business";
 import { DeepSeekProvider } from "@/services/ai/provider";
 import { analyzeBusiness, normalizeBusinessParse } from "@/services/business/analyzer";
 import { saveBusinessDraft } from "@/services/configuration/service";
+import { isSameOrigin } from "@/lib/auth/csrf";
 
 export async function POST(request: Request) {
+  if (!isSameOrigin(request)) return NextResponse.json({ error: "Cross-site request rejected." }, { status: 403 });
   const admin = await requireAdmin();
   const parsed = businessSetupSchema.pick({ pageId: true, rawBusinessInfo: true }).safeParse(await request.json());
   if (!parsed.success) return NextResponse.json({ error: "Please provide the raw business information." }, { status: 400 });
