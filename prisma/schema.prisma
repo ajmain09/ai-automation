@@ -64,15 +64,37 @@ enum AiCallType {
   RETRY
 }
 
+enum DeliveryStatus {
+  PENDING
+  SENDING
+  SENT
+  FAILED_RETRYABLE
+  FAILED_PERMANENT
+  DEAD_LETTER
+}
+
 model Admin {
-  id           String     @id @default(uuid()) @db.Uuid
-  email        String     @unique
-  passwordHash String
-  name         String?
-  lastLoginAt  DateTime?
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
-  auditLogs    AuditLog[]
+  id             String               @id @default(uuid()) @db.Uuid
+  email          String               @unique
+  passwordHash   String
+  name           String?
+  lastLoginAt    DateTime?
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+  auditLogs      AuditLog[]
+  recoveryTokens AdminRecoveryToken[]
+}
+
+model AdminRecoveryToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  adminId   String    @db.Uuid
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  admin     Admin     @relation(fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@index([adminId, expiresAt])
 }
 
 model Page {
@@ -83,6 +105,8 @@ model Page {
   isActive              Boolean                @default(true)
   aiEnabled             Boolean                @default(false)
   connectionStatus      ConnectionStatus       @default(DISCONNECTED)
+  lifecycleStatus       String                 @default("DRAFT")
+  readinessCheckedAt    DateTime?
   createdAt             DateTime               @default(now())
   updatedAt             DateTime               @updatedAt
   connection            PageConnection?
@@ -123,17 +147,20 @@ model PageConnection {
 }
 
 model PageSettings {
-  id                  String   @id @default(uuid()) @db.Uuid
-  pageId              String   @unique @db.Uuid
-  currency            String   @default("USD")
-  countryCode         String   @default("US")
-  defaultLanguage     String   @default("en")
-  tone                String   @default("helpful")
-  requiredOrderFields Json
-  globalAiPaused      Boolean  @default(false)
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
-  page                Page     @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  id                        String   @id @default(uuid()) @db.Uuid
+  pageId                    String   @unique @db.Uuid
+  currency                  String   @default("USD")
+  countryCode               String   @default("US")
+  defaultLanguage           String   @default("en")
+  tone                      String   @default("helpful")
+  requiredOrderFields       Json
+  globalAiPaused            Boolean  @default(false)
+  telegramEnabled           Boolean  @default(false)
+  encryptedTelegramBotToken String?
+  telegramChatId            String?
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
+  page                      Page     @relation(fields: [pageId], references: [id], onDelete: Cascade)
 }
 
 model ConfigurationVersion {
@@ -227,6 +254,7 @@ model Customer {
   facebookPsid  String
   name          String?
   phone         String?
+  phoneOriginal String?
   address       String?
   createdAt     DateTime        @default(now())
   updatedAt     DateTime        @updatedAt
@@ -270,13 +298,13 @@ model Conversation {
 }
 
 model OAuthState {
-  id          String    @id @default(uuid()) @db.Uuid
-  stateHash   String    @unique
-  redirectUri String
+  id                 String    @id @default(uuid()) @db.Uuid
+  stateHash          String    @unique
+  redirectUri        String
   encryptedUserToken String?
-  expiresAt   DateTime
-  createdAt   DateTime  @default(now())
-  consumedAt  DateTime?
+  expiresAt          DateTime
+  createdAt          DateTime  @default(now())
+  consumedAt         DateTime?
 }
 
 model Message {
@@ -315,32 +343,52 @@ model OrderSession {
   pageId     String   @db.Uuid
   customerId String?  @db.Uuid
   state      Json
+  status     String   @default("ACTIVE")
+  orderId    String?  @db.Uuid
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
   page       Page     @relation(fields: [pageId], references: [id], onDelete: Cascade)
+
+  @@index([pageId, customerId, status])
 }
 
 model Order {
-  id         String          @id @default(uuid()) @db.Uuid
-  pageId     String          @db.Uuid
-  customerId String?         @db.Uuid
-  status     String          @default("draft")
-  total      Decimal?        @db.Decimal(12, 2)
-  payload    Json
-  createdAt  DateTime        @default(now())
-  updatedAt  DateTime        @updatedAt
-  page       Page            @relation(fields: [pageId], references: [id], onDelete: Cascade)
-  customer   Customer?       @relation(fields: [customerId], references: [id], onDelete: SetNull)
-  revisions  OrderRevision[]
+  id                   String          @id @default(uuid()) @db.Uuid
+  pageId               String          @db.Uuid
+  customerId           String?         @db.Uuid
+  orderSessionId       String          @db.Uuid
+  status               String          @default("BROWSING")
+  total                Decimal?        @db.Decimal(12, 2)
+  payload              Json
+  productId            String?         @db.Uuid
+  productName          String?
+  variantId            String?         @db.Uuid
+  variantDetails       Json?
+  unitPrice            Decimal?        @db.Decimal(12, 2)
+  quantity             Int?
+  currency             String?
+  customerName         String?
+  normalizedPhone      String?
+  phoneOriginal        String?
+  fullAddress          String?
+  configurationVersion Int?
+  confirmedAt          DateTime?
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+  page                 Page            @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  customer             Customer?       @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  revisions            OrderRevision[]
 }
 
 model OrderRevision {
-  id        String   @id @default(uuid()) @db.Uuid
-  orderId   String   @db.Uuid
-  revision  Int
-  payload   Json
-  createdAt DateTime @default(now())
-  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  id            String   @id @default(uuid()) @db.Uuid
+  orderId       String   @db.Uuid
+  revision      Int
+  payload       Json
+  eventType     String   @default("UPDATED")
+  changedFields Json?
+  createdAt     DateTime @default(now())
+  order         Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
   @@unique([orderId, revision])
 }
@@ -389,14 +437,22 @@ model OutboundMessage {
 }
 
 model DeliveryOutbox {
-  id          String            @id @default(uuid()) @db.Uuid
-  pageId      String            @db.Uuid
-  deliveryKey String            @unique
-  payload     Json
-  sentAt      DateTime?
-  createdAt   DateTime          @default(now())
-  page        Page              @relation(fields: [pageId], references: [id], onDelete: Cascade)
-  attempts    DeliveryAttempt[]
+  id               String            @id @default(uuid()) @db.Uuid
+  pageId           String            @db.Uuid
+  deliveryKey      String            @unique
+  payload          Json
+  eventType        String
+  revision         Int
+  status           DeliveryStatus    @default(PENDING)
+  attempts         Int               @default(0)
+  maxAttempts      Int               @default(8)
+  nextAttemptAt    DateTime          @default(now())
+  leaseUntil       DateTime?
+  lastError        String?
+  sentAt           DateTime?
+  createdAt        DateTime          @default(now())
+  page             Page              @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  deliveryAttempts DeliveryAttempt[]
 }
 
 model DeliveryAttempt {
@@ -456,15 +512,17 @@ model ApiUsage {
 }
 
 model Issue {
-  id          String      @id @default(uuid()) @db.Uuid
-  pageId      String?     @db.Uuid
-  status      IssueStatus @default(OPEN)
-  severity    String      @default("medium")
-  title       String
-  description String?
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
-  page        Page?       @relation(fields: [pageId], references: [id], onDelete: SetNull)
+  id               String      @id @default(uuid()) @db.Uuid
+  pageId           String?     @db.Uuid
+  type             String      @default("GENERAL")
+  status           IssueStatus @default(OPEN)
+  severity         String      @default("medium")
+  title            String
+  description      String?
+  resolutionAction String?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+  page             Page?       @relation(fields: [pageId], references: [id], onDelete: SetNull)
 
   @@index([pageId, status])
 }

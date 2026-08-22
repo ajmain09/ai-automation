@@ -1,6 +1,6 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { createHmac, randomUUID } from "node:crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import argon2 from "argon2";
 import { prisma } from "@/lib/db/prisma";
 import { getEnv } from "@/lib/env";
@@ -24,7 +24,9 @@ export async function getCurrentAdmin() {
   if (parts.length < 4) return null;
   const signature = parts.pop();
   const token = parts.join(".");
-  if (!signature || sign(token) !== signature) return null;
+  if (!signature) return null;
+  const expected = sign(token);
+  if (signature.length !== expected.length || !timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return null;
   const issuedAt = Number(parts[2]);
   if (!Number.isFinite(issuedAt) || Date.now() - issuedAt > SESSION_TTL * 1000) return null;
   return prisma.admin.findUnique({ where: { id: parts[0] } });

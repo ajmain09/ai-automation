@@ -1,38 +1,29 @@
-# Build Status — Step 2
+# Build Status — Step 3
 
-Status: Step 2 implementation complete for local validation; external runtime checks remain deferred.
+Status: COMPLETE for local code, schema, mocked-domain, and production-build validation. External runtime configuration remains deferred.
 
 Implemented:
 
-- Next.js App Router + TypeScript project foundation
-- Professional responsive light admin UI with sidebar and page workspaces
-- One Super Admin login foundation with Argon2id, signed HTTP-only cookie, and in-memory login rate protection
-- PostgreSQL + Prisma schema and seed boundary
-- Page list, overview, onboarding wizard, business setup, products/variants, placeholders, and AI safety controls
-- Draft/live configuration versioning with audit log architecture
-- Encryption service interface for future Meta credentials
-- Docker Compose services for app, worker, PostgreSQL, and Caddy
-- Required documentation and Step 1/Step 2 tests
-- Step 2 Prisma migration generated at `prisma/migrations/20260823010000_step2/migration.sql`
-- Environment validation is centralized in `lib/env.ts` and documented in `.env.example`
+- Backend-controlled order states with explicit confirmation, required-field validation, page settings, normalized phones, draft updates, repeat-safe `order_session_id`, immutable confirmation snapshots, price-change re-confirmation, revisions, and cancellation events.
+- Transactional order confirmation plus deterministic Telegram delivery outbox keys, worker delivery, retry/dead-letter states, permanent/transient classification, and actionable Issues.
+- Safe outbound final checks, attachment fallback, expired-job protection, AI attempt records created before provider execution, retry attempts, and page-scoped AI usage.
+- Lightweight retry/circuit-breaker primitives, health states, deterministic readiness checks, guarded go-live transition, configuration rollback, recovery-token service, and production backup/restore scripts.
+- Issues and Orders operator screens plus health/readiness API boundaries.
 
-Verification results:
+Verification:
 
-- `npm.cmd install --cache D:\\SMS1\\.npm-cache --no-audit --no-fund` — passed
-- `npx.cmd prisma validate` — passed
-- `npx.cmd prisma generate` — passed
-- Offline migration/schema diff comparison — passed; Step 2 migration is checked in
-- `npm.cmd run lint` — passed
-- `npm.cmd run typecheck` — passed
-- `npm.cmd test` — passed (10 tests)
-- `npm.cmd run build` — passed
-- Live PostgreSQL migration apply/status — DEFERRED until a PostgreSQL service is available; offline migration validation passed
-- Docker CLI / Docker build — DEFERRED to VPS deployment; Docker is not installed locally and this is not a code failure
+- Prisma validate: PASS with `DATABASE_URL` set to the documented PostgreSQL URL shape.
+- Prisma generate: PASS.
+- ESLint: PASS.
+- TypeScript: PASS.
+- Vitest: PASS — 16 tests.
+- Next.js production build: PASS with the documented PostgreSQL URL placeholder; no database was contacted.
 
-Step 2 includes Meta OAuth/Page discovery, encrypted credentials, shared signed webhook ingestion, event/message idempotency, PostgreSQL jobs with leases/retries/jitter/TTL/dead-letter state, smart buffering, version and manual-reply collision protection, outbound delivery states, DeepSeek provider isolation, strict Zod contracts, business parsing, page-scoped memory/retrieval, canonical product validation, draft-only configuration parsing, and the Page AI Usage view.
+DEFERRED TO VPS:
 
-External configuration required: Meta App credentials/redirect and verify token, DeepSeek API key/rates, and PostgreSQL runtime state.
+- Live PostgreSQL migration/apply, worker lease/recovery smoke test, backup restore smoke test, Docker build/compose smoke test, Caddy certificate/domain check, and graceful deployment test.
+- Meta webhook/send runtime, DeepSeek runtime, and Telegram Bot API runtime.
 
-Local verification: `prisma validate` passed, TypeScript typecheck passed, ESLint passed, 10 Vitest tests passed, and `next build` passed.
+EXTERNAL CONFIG REQUIRED:
 
-Deferred to VPS: live PostgreSQL migration/apply and worker smoke tests, Docker smoke tests, Meta App review/webhook subscription activation, real Facebook delivery, and Step 3 Telegram/order automation.
+- Production `DATABASE_URL`, `SESSION_SECRET`, explicit admin password/recovery delivery, Meta app credentials and webhook verification, DeepSeek key/rates, Telegram destination, domain/Caddy values, and backup storage credentials.

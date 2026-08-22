@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { encryptCredential } from "@/lib/encryption/service";
 import { decryptCredential } from "@/lib/encryption/service";
 import { getEnv } from "@/lib/env";
+import { withProviderCircuit } from "@/services/resilience/retry";
 
 export type MetaPage = { id: string; name: string; access_token: string };
 
@@ -30,10 +31,12 @@ export async function beginMetaOAuth() {
 }
 
 async function metaJson<T>(url: URL, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, { ...init, signal: AbortSignal.timeout(10_000) });
-  const body = await response.json() as T & { error?: { message?: string } };
-  if (!response.ok || body.error) throw new Error(body.error?.message ?? "Meta request failed");
-  return body;
+  return withProviderCircuit("meta", async () => {
+    const response = await fetch(url, { ...init, signal: AbortSignal.timeout(10_000) });
+    const body = await response.json() as T & { error?: { message?: string } };
+    if (!response.ok || body.error) throw new Error(body.error?.message ?? `Meta request failed (${response.status})`);
+    return body;
+  });
 }
 
 export async function consumeOAuthState(state: string) {

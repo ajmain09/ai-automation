@@ -34,3 +34,16 @@ export async function publishLatestDraft(pageId: string, adminId: string) {
     return live;
   });
 }
+
+export async function rollbackToConfiguration(pageId: string, version: number, adminId: string) {
+  return prisma.$transaction(async (tx) => {
+    const target = await tx.configurationVersion.findFirst({ where: { pageId, version, status: { in: ["LIVE", "ARCHIVED"] } } });
+    if (!target) throw new Error("Configuration version not found in page scope");
+    const data = target.businessData as { conflicts?: Array<{ critical?: boolean }> } | null;
+    if (data?.conflicts?.some((conflict) => conflict.critical)) throw new Error("Cannot roll back to a configuration with critical conflicts");
+    await tx.configurationVersion.updateMany({ where: { pageId, status: "LIVE" }, data: { status: "ARCHIVED" } });
+    const live = await tx.configurationVersion.update({ where: { id: target.id }, data: { status: "LIVE", publishedAt: new Date() } });
+    await tx.auditLog.create({ data: { adminId, pageId, action: "configuration.rollback", metadata: { version } } });
+    return live;
+  });
+}
