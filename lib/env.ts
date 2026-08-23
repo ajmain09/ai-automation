@@ -1,10 +1,11 @@
 import { z } from "zod";
 
 const envSchema = z.object({
-  DATABASE_URL: z.string().url().or(z.string().startsWith("postgresql://")),
-  SESSION_SECRET: z.string().min(32),
+  DATABASE_URL: z.string().url().or(z.string().startsWith("postgresql://")).default("postgresql://growthifyx:change-me@localhost:5432/growthifyx?schema=public"),
+  SESSION_SECRET: z.string().min(32).default("local-development-only-session-secret-change-me"),
   APP_URL: z.string().url().default("https://ai.growthifyx.space"),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+  DEV_PREVIEW: z.preprocess((value) => value === true || value === "true", z.boolean()).default(false),
   ADMIN_EMAIL: z.string().email().optional(),
   ADMIN_PASSWORD: z.string().min(12).optional(),
   META_APP_ID: z.string().optional(),
@@ -21,6 +22,7 @@ const envSchema = z.object({
   TELEGRAM_DEFAULT_CHAT_ID: z.string().optional(),
 }).superRefine((value, context) => {
   if (value.NODE_ENV !== "production") return;
+  if (value.DEV_PREVIEW) context.addIssue({ code: z.ZodIssueCode.custom, path: ["DEV_PREVIEW"], message: "DEV_PREVIEW cannot be enabled in production" });
   if (value.APP_URL !== "https://ai.growthifyx.space") context.addIssue({ code: z.ZodIssueCode.custom, path: ["APP_URL"], message: "Production APP_URL must be https://ai.growthifyx.space" });
   if (!value.DATABASE_URL.startsWith("postgresql://") || /change-me|localhost/i.test(value.DATABASE_URL)) context.addIssue({ code: z.ZodIssueCode.custom, path: ["DATABASE_URL"], message: "Production DATABASE_URL must point to PostgreSQL" });
   if (/replace-with|change-this|change-me/i.test(value.SESSION_SECRET)) context.addIssue({ code: z.ZodIssueCode.custom, path: ["SESSION_SECRET"], message: "Production SESSION_SECRET must be replaced" });
@@ -39,4 +41,9 @@ export function getEnv() {
   if (!parsed.success) throw new Error(`Invalid environment: ${parsed.error.issues.map((issue) => issue.path.join(".")).join(", ")}`);
   cached = parsed.data;
   return cached;
+}
+
+export function isDevPreview() {
+  const env = getEnv();
+  return env.DEV_PREVIEW && env.NODE_ENV !== "production";
 }

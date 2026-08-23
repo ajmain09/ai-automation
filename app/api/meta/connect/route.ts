@@ -5,6 +5,8 @@ import { connectMetaPage, discoverPages, healthCheckMetaPage } from "@/services/
 import { prisma } from "@/lib/db/prisma";
 import { z } from "zod";
 import { isSameOrigin } from "@/lib/auth/csrf";
+import { isDevPreview } from "@/lib/env";
+import { connectPreviewPage } from "@/services/preview/store";
 
 const schema = z.object({ pageId: z.string().uuid(), state: z.string().min(20), metaPageId: z.string().min(1).max(100) });
 export async function POST(request: Request) {
@@ -12,6 +14,7 @@ export async function POST(request: Request) {
   const admin = await requireAdmin();
   const parsed = schema.safeParse(await request.json());
   if (!parsed.success) return NextResponse.json({ error: "Invalid page connection request." }, { status: 400 });
+  if (isDevPreview()) { connectPreviewPage(parsed.data.pageId, parsed.data.metaPageId, "Growthifyx Demo Page"); return NextResponse.json({ ok: true }); }
   const hash = (await import("node:crypto")).createHash("sha256").update(parsed.data.state).digest("hex");
   const state = await prisma.oAuthState.findUnique({ where: { stateHash: hash } });
   if (!state?.encryptedUserToken || state.expiresAt < new Date()) return NextResponse.json({ error: "OAuth session expired." }, { status: 400 });

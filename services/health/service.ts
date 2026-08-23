@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db/prisma";
 import { getEnv } from "@/lib/env";
 import { getTelegramDestination } from "@/services/telegram/service";
+import { isDevPreview } from "@/lib/env";
 
 export type HealthState = "HEALTHY" | "DEGRADED" | "ACTION_REQUIRED" | "PAUSED";
 export type HealthResult = { component: string; state: HealthState; detail: string };
@@ -8,6 +9,10 @@ export type HealthResult = { component: string; state: HealthState; detail: stri
 export async function getSystemHealth(pageId?: string): Promise<HealthResult[]> {
   const env = getEnv();
   const results: HealthResult[] = [];
+  if (isDevPreview()) {
+    if (pageId) return [{ component: "Meta", state: "HEALTHY", detail: "Mock Facebook connection is active for local preview." }, { component: "DeepSeek", state: env.DEEPSEEK_API_KEY ? "HEALTHY" : "ACTION_REQUIRED", detail: env.DEEPSEEK_API_KEY ? "DeepSeek credentials are configured." : "DeepSeek not configured." }, { component: "Telegram", state: "DEGRADED", detail: "Telegram is not used by local preview." }, { component: "Database", state: "HEALTHY", detail: "Local preview fixtures are active; PostgreSQL is not required." }, { component: "Worker", state: "HEALTHY", detail: "Local preview worker boundary is mocked." }];
+    return [{ component: "Meta", state: "HEALTHY", detail: "Mock Facebook connection is active for local preview." }, { component: "DeepSeek", state: env.DEEPSEEK_API_KEY ? "HEALTHY" : "ACTION_REQUIRED", detail: env.DEEPSEEK_API_KEY ? "DeepSeek credentials are configured." : "DeepSeek not configured." }, { component: "Telegram", state: "DEGRADED", detail: "Telegram is not used by local preview." }, { component: "Database", state: "HEALTHY", detail: "Local preview fixtures are active; PostgreSQL is not required." }, { component: "Worker", state: "HEALTHY", detail: "Local preview worker boundary is mocked." }];
+  }
   if (pageId) {
     const page = await prisma.page.findUnique({ where: { id: pageId }, include: { connection: true, settings: true } });
     results.push({ component: "Meta", state: page?.connectionStatus === "CONNECTED" ? "HEALTHY" : "ACTION_REQUIRED", detail: page?.connectionStatus === "CONNECTED" ? "Facebook Page connection is usable." : "Facebook Page connection requires attention." });

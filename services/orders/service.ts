@@ -1,6 +1,8 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { OrderDraft, ProductTruth, emptyOrderDraft, updateOrderDraft, validateOrderDraft } from "@/services/orders/engine";
+import { isDevPreview } from "@/lib/env";
+import { getPreviewOrders } from "@/services/preview/store";
 
 const json = (value: unknown) => value as Prisma.InputJsonValue;
 
@@ -97,5 +99,6 @@ export async function cancelConfirmedOrder(input: { pageId: string; orderId: str
 }
 
 export async function getPageOrders(pageId: string) {
+  if (isDevPreview()) return getPreviewOrders().filter((order) => order.pageId === pageId);
   return prisma.order.findMany({ where: { pageId }, orderBy: { createdAt: "desc" }, take: 100, include: { revisions: { orderBy: { revision: "desc" }, take: 1 } } });
 }
