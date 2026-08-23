@@ -3,8 +3,10 @@ node_modules
 coverage
 .npm-cache
 .env
-.env.*
+.env.local
+.env.*.local
 !.env.example
+!.env.production.example
 prisma/dev.db
 *.log
 *.tsbuildinfo

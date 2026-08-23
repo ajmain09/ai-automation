@@ -99,6 +99,6 @@ export async function cancelConfirmedOrder(input: { pageId: string; orderId: str
 }
 
 export async function getPageOrders(pageId: string) {
-  if (isDevPreview()) return getPreviewOrders().filter((order) => order.pageId === pageId);
+  if (isDevPreview()) return getPreviewOrders(pageId);
   return prisma.order.findMany({ where: { pageId }, orderBy: { createdAt: "desc" }, take: 100, include: { revisions: { orderBy: { revision: "desc" }, take: 1 } } });
 }

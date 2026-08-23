@@ -6,6 +6,8 @@ import { AiResponse, BusinessParse, aiResponseSchema, businessParseSchema } from
 import { withProviderCircuit } from "@/services/resilience/retry";
 import { upsertActionableIssue } from "@/services/issues/service";
 import { redactSensitiveText } from "@/lib/logging/logger";
+import { isDevPreview } from "@/lib/env";
+import { recordPreviewUsage } from "@/services/preview/store";
 
 export type ProviderUsage = { inputTokens?: number; outputTokens?: number; totalTokens?: number; raw?: unknown; requestId?: string };
 export type ProviderResult = { content: string; usage?: ProviderUsage };
@@ -36,16 +38,17 @@ export class StaticAiProvider implements AiProvider {
 
 export function fallbackAiResponse(): AiResponse { return { intent: "unknown", reply: "Thanks for your message. Could you share a little more about what you need?", fact_updates: [], asked_question_key: null, recommended_product_ids: [], order_action: "NONE" }; }
 
-type AttemptHandle = { runId: string; startedAt: number };
+type AttemptHandle = { runId: string; startedAt: number; pageId: string };
 
 export async function beginProviderAttempt(input: { pageId: string; provider: AiProvider; callType: AiCallType; attemptNumber: number }): Promise<AttemptHandle> {
+  if (isDevPreview()) return { runId: randomUUID(), startedAt: Date.now(), pageId: input.pageId };
   const env = getEnv();
   const run = await prisma.$transaction(async (tx) => {
     const created = await tx.aiRun.create({ data: { pageId: input.pageId, attemptId: randomUUID(), provider: input.provider.name, model: input.provider.model, callType: input.callType, status: "RUNNING", attemptNumber: input.attemptNumber } });
     await tx.apiUsage.create({ data: { pageId: input.pageId, aiAttemptId: created.id, provider: input.provider.name, model: input.provider.model, callType: input.callType, inputRateSnapshot: env.DEEPSEEK_INPUT_RATE, outputRateSnapshot: env.DEEPSEEK_OUTPUT_RATE, attemptNumber: input.attemptNumber, status: "RUNNING" } });
     return created;
   });
-  return { runId: run.id, startedAt: Date.now() };
+  return { runId: run.id, startedAt: Date.now(), pageId: input.pageId };
 }
 
 export async function finishProviderAttempt(input: { handle: AttemptHandle; usage?: ProviderUsage; status: string; error?: string }) {
@@ -54,6 +57,10 @@ export async function finishProviderAttempt(input: { handle: AttemptHandle; usag
   const outputTokens = input.usage?.outputTokens ?? 0;
   const totalTokens = input.usage?.totalTokens ?? inputTokens + outputTokens;
   const env = getEnv();
+  if (isDevPreview()) {
+    recordPreviewUsage(input.handle.pageId, inputTokens, outputTokens, inputTokens * env.DEEPSEEK_INPUT_RATE + outputTokens * env.DEEPSEEK_OUTPUT_RATE);
+    return null;
+  }
   return prisma.$transaction(async (tx) => {
     const estimatedCost = inputTokens * env.DEEPSEEK_INPUT_RATE + outputTokens * env.DEEPSEEK_OUTPUT_RATE;
     await tx.aiRun.update({ where: { id: input.handle.runId }, data: { status: input.status, inputTokens, outputTokens, totalTokens, latencyMs: duration, providerRequestId: input.usage?.requestId, errorCode: input.error?.slice(0, 120) } });

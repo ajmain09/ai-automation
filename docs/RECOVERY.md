@@ -2,6 +2,8 @@
 
 ## Admin recovery
 
+Local preview uses `.env.local` only and has no production recovery meaning. Never reuse its `admin@local.test` credentials or session secret on the VPS.
+
 Issue a short-lived, single-use recovery token through the one-admin operator flow. Store only its SHA-256 hash. Set a new password of at least 12 characters, invalidate the token, and review the `admin.password_reset` audit entry. There is no default production password. Never write a password into source control or AI context.
 
 ## PostgreSQL backups

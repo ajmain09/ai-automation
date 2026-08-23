@@ -4,7 +4,11 @@ export function isSameOrigin(request: Request) {
   const origin = request.headers.get("origin");
   if (!origin) return true;
   try {
-    const expected = isDevPreview() ? "http://localhost:3000" : getEnv().APP_URL;
+    if (isDevPreview()) {
+      const candidate = new URL(origin);
+      return candidate.protocol === "http:" && ["localhost", "127.0.0.1"].includes(candidate.hostname);
+    }
+    const expected = getEnv().APP_URL!;
     return new URL(origin).origin === new URL(expected).origin;
   } catch { return false; }
 }

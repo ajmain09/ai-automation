@@ -1,9 +1,10 @@
 import { IssueStatus } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { isDevPreview } from "@/lib/env";
-import { getPreviewIssues, resolvePreviewIssue } from "@/services/preview/store";
+import { createPreviewIssue, getPreviewIssues, resolvePreviewIssue } from "@/services/preview/store";
 
 export async function upsertActionableIssue(input: { pageId?: string; type: string; title: string; description: string; severity?: string; resolutionAction?: string }) {
+  if (isDevPreview()) return getPreviewIssues().find((issue) => issue.pageId === (input.pageId ?? null) && issue.type === input.type && issue.status !== "RESOLVED") ?? createPreviewIssue(input);
   const existing = await prisma.issue.findFirst({ where: { pageId: input.pageId, type: input.type, status: { in: ["OPEN", "ACKNOWLEDGED"] } } });
   if (existing) return existing;
   return prisma.issue.create({ data: { pageId: input.pageId, type: input.type, title: input.title, description: input.description, severity: input.severity ?? "medium", resolutionAction: input.resolutionAction } });

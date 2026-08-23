@@ -1,6 +1,6 @@
 # Build Status — Final release audit
 
-Status: COMPLETE for local code, schema, mocked-domain, UI, security-boundary, and production-build validation. External runtime configuration remains deferred.
+Status: COMPLETE for local code, schema, mocked-domain, UI, security-boundary, database-free preview, and production-build validation. External runtime configuration remains deferred.
 
 Implemented:
 
@@ -10,6 +10,7 @@ Implemented:
 - Lightweight retry/circuit-breaker primitives, health states, deterministic readiness checks, guarded go-live transition, configuration rollback, recovery-token service, and production backup/restore scripts.
 - Issues and Orders operator screens plus health/readiness API boundaries.
 - Canonical production URL and public privacy/data-deletion routes, strict production environment checks, same-origin protection for admin mutations, deterministic webhook fallback IDs, race-safe delivery claims, and monochrome operator UI.
+- Context-aware environment validation, ignored `.env.local` preview runtime, safe production template, separate application encryption key, and database-free preview coverage across dashboard routes.
 - Product and business edits remain draft-only; rollback rematerializes the selected page configuration and order processing validates the current live configuration and active variant.
 
 Verification:

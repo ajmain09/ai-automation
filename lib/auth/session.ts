@@ -8,9 +8,10 @@ import { logger } from "@/lib/logging/logger";
 
 const COOKIE = "gx_session";
 const SESSION_TTL = 60 * 60 * 8;
-const previewAdmin = { id: "00000000-0000-4000-8000-000000000001", email: "preview@localhost", passwordHash: "preview-only", name: "Local Preview", lastLoginAt: null, createdAt: new Date(0), updatedAt: new Date(0) };
+const PREVIEW_ADMIN_ID = "00000000-0000-4000-8000-000000000001";
+const previewAdmin = { id: PREVIEW_ADMIN_ID, email: "admin@local.test", passwordHash: "preview-only", name: "Local Preview Admin", lastLoginAt: null, createdAt: new Date(0), updatedAt: new Date(0) };
 
-function sign(value: string) { return createHmac("sha256", getEnv().SESSION_SECRET).update(value).digest("base64url"); }
+function sign(value: string) { return createHmac("sha256", getEnv().SESSION_SECRET!).update(value).digest("base64url"); }
 
 export async function createSession(adminId: string) {
   const token = `${adminId}.${randomUUID()}.${Date.now()}`;
@@ -19,7 +20,6 @@ export async function createSession(adminId: string) {
 }
 
 export async function getCurrentAdmin() {
-  if (isDevPreview()) return previewAdmin;
   const raw = (await cookies()).get(COOKIE)?.value;
   if (!raw) return null;
   const parts = raw.split(".");
@@ -31,17 +31,23 @@ export async function getCurrentAdmin() {
   if (signature.length !== expected.length || !timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return null;
   const issuedAt = Number(parts[2]);
   if (!Number.isFinite(issuedAt) || Date.now() - issuedAt > SESSION_TTL * 1000) return null;
+  if (isDevPreview()) return parts[0] === previewAdmin.id ? { ...previewAdmin, email: getEnv().PREVIEW_ADMIN_EMAIL! } : null;
   return prisma.admin.findUnique({ where: { id: parts[0] } });
 }
 
 export async function requireAdmin() {
-  if (isDevPreview()) return previewAdmin;
   const admin = await getCurrentAdmin();
   if (!admin) redirect("/login");
   return admin;
 }
 
 export async function authenticateAdmin(email: string, password: string) {
+  if (isDevPreview()) {
+    const env = getEnv();
+    const valid = email.trim().toLowerCase() === env.PREVIEW_ADMIN_EMAIL!.trim().toLowerCase() && password === env.PREVIEW_ADMIN_PASSWORD;
+    if (valid) logger.info({ adminId: previewAdmin.id }, "admin.login.success.preview");
+    return valid ? { ...previewAdmin, email: env.PREVIEW_ADMIN_EMAIL! } : null;
+  }
   const admin = await prisma.admin.findUnique({ where: { email: email.toLowerCase().trim() } });
   if (!admin || !(await argon2.verify(admin.passwordHash, password))) return null;
   await prisma.admin.update({ where: { id: admin.id }, data: { lastLoginAt: new Date() } });
