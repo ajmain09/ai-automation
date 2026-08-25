@@ -15,7 +15,8 @@
     "prisma:deploy": "prisma migrate deploy",
     "prisma:migrate": "prisma migrate dev",
     "prisma:seed": "tsx prisma/seed.ts",
-    "admin:bootstrap": "tsx prisma/bootstrap-admin.ts"
+    "admin:bootstrap": "tsx prisma/bootstrap-admin.ts",
+    "validate:production-env": "tsx scripts/validate-production-env.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.16.0",

@@ -17,6 +17,11 @@ services:
       retries: 12
       start_period: 10s
     stop_grace_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
 
   app:
     build:
@@ -39,6 +44,7 @@ services:
       META_GRAPH_VERSION: ${META_GRAPH_VERSION:-v23.0}
       META_VERIFY_TOKEN: ${META_VERIFY_TOKEN:-}
       META_WEBHOOK_URL: ${META_WEBHOOK_URL:-https://ai.growthifyx.space/api/meta/webhook}
+      CADDY_DOMAIN: ${CADDY_DOMAIN:-ai.growthifyx.space}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       TZ: ${TZ:-Asia/Dhaka}
     depends_on:
@@ -54,13 +60,18 @@ services:
       retries: 12
       start_period: 30s
     stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
 
   worker:
     build:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
-    command: ["npx", "tsx", "worker/index.ts"]
+    command: ["/app/docker/worker-entrypoint.sh"]
     environment:
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
       SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET in .env}
@@ -76,12 +87,17 @@ services:
     networks:
       - backend
     healthcheck:
-      test: ["CMD-SHELL", "node -e \"process.kill(1, 0)\""]
+      test: ["CMD", "node", "-e", "const fs=require('fs'); const running=fs.readdirSync('/proc').filter((item)=>/^\\d+$/.test(item)).some((pid)=>{ try { return fs.readFileSync('/proc/'+pid+'/cmdline','utf8').includes('worker/index.ts'); } catch { return false; } }); if (!running) process.exit(1);"]
       interval: 15s
       timeout: 5s
       retries: 3
       start_period: 15s
     stop_grace_period: 45s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
 
   caddy:
     image: caddy:2-alpine
@@ -98,7 +114,18 @@ services:
       - caddy_config:/config
     networks:
       - edge
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider --quiet http://127.0.0.1:80 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
 
 networks:
   backend:
@@ -107,5 +134,8 @@ networks:
 
 volumes:
   postgres_data:
+    name: growthifyx_postgres_data
   caddy_data:
+    name: growthifyx_caddy_data
   caddy_config:
+    name: growthifyx_caddy_config

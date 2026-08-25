@@ -23,3 +23,9 @@ Business and catalog edits create DRAFT configuration versions. Rollback remater
 The old global AI provider, Telegram, FX, pricing, and budget models are removed. `PageCostSettings.reservedBdt` is used by the atomic hard-limit reservation path. A failed reservation sets only that Page to `PAUSED_BY_BUDGET` and creates a Page-scoped Issue.
 
 PostgreSQL is the only required stateful service; Redis is intentionally not used. The checked-in Step 3 migration is additive and includes a deterministic UUID backfill for existing orders. Live migration application and restore smoke testing are deferred to the VPS because local PostgreSQL is unavailable.
+
+## Production migration process
+
+Migrations are committed under `prisma/migrations` and are applied only with `prisma migrate deploy`. On first deployment, the app container waits for the healthy PostgreSQL container, validates the production environment, applies all pending migrations, and only then becomes healthy. The worker and Caddy start after app health. Updates use the same app startup path; restore uses `scripts/restore-postgres.sh`, then applies committed migrations before traffic is reopened.
+
+Do not run `prisma migrate dev` against production. Do not delete `growthifyx_postgres_data`. Live migration locking, concurrency, and rollback behavior are VPS validations.

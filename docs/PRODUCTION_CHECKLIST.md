@@ -1,46 +1,40 @@
-# Production checklist
+# Production deployment checklist
 
-Canonical URL: `https://ai.growthifyx.space`
+Target: `https://ai.growthifyx.space`
 
-## Before the first VPS start
+## Before deployment
 
-- [ ] DNS `A` record for `ai.growthifyx.space` points to `161.248.201.222`.
-- [ ] `.env` was created from `.env.production.example`; it is not committed.
-- [ ] `APP_URL`, `NODE_ENV=production`, PostgreSQL values, `SESSION_SECRET`, and `APP_ENCRYPTION_KEY` are set.
-- [ ] `SESSION_SECRET` and `APP_ENCRYPTION_KEY` are different cryptographically random values.
-- [ ] No `ADMIN_PASSWORD`, DeepSeek key, Telegram token, Meta Page token, or other secret was added to Git.
-- [ ] Meta app values are either safe bootstrap fallbacks in `.env` or will be entered after login in Settings → Meta Platform.
+- [ ] DNS `A` record for `ai.growthifyx.space` points to the VPS.
+- [ ] `.env` was created from `.env.production.example`, is mode `600`, and is not committed.
+- [ ] `NODE_ENV=production`, `DEV_PREVIEW=false`, canonical `APP_URL`, PostgreSQL values, `SESSION_SECRET`, `APP_ENCRYPTION_KEY`, and `ADMIN_EMAIL` are set.
+- [ ] `SESSION_SECRET` and `APP_ENCRYPTION_KEY` are different random values.
+- [ ] No Page token, DeepSeek key, Telegram token, or admin password was committed.
+- [ ] Backup storage exists outside the PostgreSQL volume.
 
-## First boot
+## Deployment acceptance
 
-- [ ] `docker compose config --quiet` succeeds.
+- [ ] `docker compose config --quiet` passes.
+- [ ] `./scripts/deploy.sh` passes its environment preflight.
 - [ ] PostgreSQL is healthy and has no host port binding.
-- [ ] The app migration entrypoint completes with `prisma migrate deploy`.
-- [ ] `/api/health` returns HTTP 200.
-- [ ] Worker and Caddy are healthy/running.
-- [ ] `https://ai.growthifyx.space/login` loads with a valid certificate.
-- [ ] `docker compose run --rm -it app npm run admin:bootstrap` creates the one Super Admin.
+- [ ] App startup completes `prisma migrate deploy`.
+- [ ] `/api/health` returns HTTP 200 through Caddy.
+- [ ] Worker and Caddy health checks are healthy.
+- [ ] Only host ports 80 and 443 are published.
+- [ ] `docker compose logs` contain no credentials.
+- [ ] The Super Admin is created with `docker compose run --rm -it app npm run admin:bootstrap`.
 
-## Meta and Page readiness
+## Meta and first Page
 
-- [ ] Settings → Meta Platform contains the Meta App ID, App Secret, and Verify Token.
-- [ ] The Meta callback, webhook, privacy, and data-deletion URLs exactly match `docs/META_SETUP.md`.
-- [ ] OAuth state, webhook verification, and X-Hub-Signature-256 checks pass.
-- [ ] Page discovery, encrypted Page token storage, Page subscription, reconnect, and revoked-access behavior are tested.
-- [ ] Each Page passes readiness before Go Live.
+- [ ] Meta dashboard values exactly match `docs/META_SETUP.md`.
+- [ ] Meta App credentials are configured in Global Settings > Meta Platform.
+- [ ] The first Page passes the three visible onboarding steps and readiness checks in `docs/FIRST_LIVE_PAGE.md`.
+- [ ] Real provider tests are performed only after the Page is configured and kept paused until verified.
 
-## Per-Page operations
+## Recovery readiness
 
-- [ ] DeepSeek key/model/behavior/memory/balance settings are configured in the Page workspace.
-- [ ] Telegram token, Chat ID, notification switches, and Test Telegram are configured in the Page workspace.
-- [ ] FX, pricing snapshots, daily/monthly budgets, hard limit, and provider balance are reviewed per Page.
-- [ ] AI usage confirms Page isolation, USD/BDT snapshots, retries, and only the affected Page pauses at its limit.
-- [ ] Real Messenger, AI, memory, order, Telegram, and AI Usage checks pass for the first live Page.
+- [ ] A backup is created with `scripts/backup-postgres.sh`.
+- [ ] Backup retention is seven daily and four weekly dumps.
+- [ ] Restore smoke testing is completed on the VPS; it is not a local claim.
+- [ ] Rollback and worker restart commands in `docs/RECOVERY.md` are available to the operator.
 
-## Resilience and recovery
-
-- [ ] App, worker, PostgreSQL, and Caddy log commands have been reviewed for secret-free output.
-- [ ] Restart, temporary database/provider outage, expired lease, dead-letter job, and budget-limit behavior are verified.
-- [ ] A backup is created outside the PostgreSQL data directory.
-- [ ] A restore smoke test is performed on the VPS; do not mark this item complete from local checks.
-- [ ] Backup retention is seven daily and four weekly copies.
+Docker runtime, live PostgreSQL migration/concurrency, Caddy certificate/domain, Meta, AI provider, Telegram, and restore smoke tests remain VPS validations.

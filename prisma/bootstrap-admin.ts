@@ -1,7 +1,7 @@
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import argon2 from "argon2";
-import { PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
 
@@ -59,11 +59,14 @@ async function main() {
     const password = await readSecret("Super Admin password: ");
     if (password.length < 12) throw new Error("The Super Admin password must be at least 12 characters.");
     const passwordHash = await argon2.hash(password, { type: argon2.argon2id });
-    await prisma.$transaction(async (tx) => {
+    const created = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(748319041)`;
+      if (await tx.admin.count() > 0) return false;
       const admin = await tx.admin.create({ data: { email, passwordHash } });
       await tx.auditLog.create({ data: { adminId: admin.id, action: "admin.bootstrap.created" } });
-    });
-    console.log("Super Admin created. The password was not printed or stored in plaintext.");
+      return true;
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    console.log(created ? "Super Admin created. The password was not printed or stored in plaintext." : "A Super Admin already exists; no changes were made.");
   } finally {
     rl.close();
     await prisma.$disconnect();

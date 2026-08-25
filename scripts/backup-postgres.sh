@@ -11,6 +11,7 @@ stamp="$(date -u +%Y%m%d-%H%M%S)"
 daily_file="$backup_dir/growthifyx-$stamp.dump"
 
 docker compose exec -T postgres sh -c 'pg_dump --format=custom --no-owner --no-privileges -U "$POSTGRES_USER" -d "$POSTGRES_DB"' > "$daily_file"
+[[ -s "$daily_file" ]] || { rm -f "$daily_file"; echo "Backup file is empty; refusing to retain it." >&2; exit 1; }
 chmod 600 "$daily_file"
 find "$backup_dir" -maxdepth 1 -type f -name 'growthifyx-*.dump' -printf '%T@ %p\n' | sort -nr | tail -n +$((daily_retention + 1)) | cut -d' ' -f2- | xargs -r rm -f
 

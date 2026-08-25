@@ -1,11 +1,19 @@
 # Deployment
 
-The complete production runbook is [VPS_DEPLOYMENT.md](VPS_DEPLOYMENT.md). It covers upload/clone, `.env`, Docker Compose startup, Prisma migrations, Super Admin bootstrap, HTTPS verification, logs, backups, and restore.
+Production topology is exactly four containers:
 
-The production topology is `app`, `worker`, `postgres`, and `caddy`. Only Caddy exposes ports 80 and 443. Redis and external automation services are not part of this system.
+`Caddy -> app -> PostgreSQL`, with `worker` consuming the PostgreSQL job queue. Redis and external automation services are not part of this system. PostgreSQL uses the named persistent volume `growthifyx_postgres_data`; only Caddy publishes ports 80 and 443.
 
-The canonical public URL is `https://ai.growthifyx.space`. Public policy and Meta routes are `/privacy`, `/data-deletion`, `/api/meta/oauth/callback`, and `/api/meta/webhook`.
+The VPS runbook is [VPS_DEPLOYMENT.md](VPS_DEPLOYMENT.md). The first deployment sequence is:
 
-For local preview, copy `.env.example` to `.env.local`, keep `NODE_ENV=development` and `DEV_PREVIEW=true`, then run `npm install` and `npm run dev`. Preview credentials are local-only and must never be copied to production.
+1. Copy or clone the repository into `/opt/growthifyx-ai-sales`.
+2. Create and protect `.env` from `.env.production.example`.
+3. Run `./scripts/deploy.sh`.
+4. Bootstrap the one Super Admin.
+5. Verify public health and policy routes.
 
-Live PostgreSQL migration, Docker build/runtime, Caddy certificates, provider calls, and restore smoke testing remain VPS checks. Do not install Docker locally for this deployment-pack pass.
+App startup validates production variables and applies committed migrations with `prisma migrate deploy` before becoming healthy. The worker starts only after app health, uses PostgreSQL leases/retries, and recovers expired running jobs on its next claim cycle.
+
+Use `scripts/update.sh` for updates. It creates a backup first unless `SKIP_BACKUP=true` is explicitly supplied. Use `scripts/backup-postgres.sh` and the guarded restore command in `docs/RECOVERY.md` for database operations.
+
+Local static checks do not claim Docker, live PostgreSQL, public HTTPS, Meta, DeepSeek, Telegram, or restore runtime success.

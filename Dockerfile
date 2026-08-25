@@ -25,8 +25,9 @@ COPY --from=build /app/prisma ./prisma
 COPY --from=build /app/lib ./lib
 COPY --from=build /app/services ./services
 COPY --from=build /app/worker ./worker
+COPY --from=build /app/scripts ./scripts
 COPY --from=build /app/tsconfig.json ./tsconfig.json
 COPY --from=build /app/docker ./docker
-RUN chmod +x /app/docker/app-entrypoint.sh
+RUN chmod +x /app/docker/*.sh
 EXPOSE 3000
 CMD ["npm", "run", "start"]

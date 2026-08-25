@@ -1,41 +1,91 @@
-# VPS deployment
+# VPS deployment runbook
 
-Target: `https://ai.growthifyx.space` on `161.248.201.222`.
+Target: `https://ai.growthifyx.space`.
 
-Only Caddy publishes ports 80 and 443. PostgreSQL and the Next.js app have no host port bindings.
+## Exact first command on the VPS
 
-## Upload or clone
+From a fresh VPS, run this first:
 
-Run: `sudo mkdir -p /opt/growthifyx-ai-sales`, `sudo chown "$USER":"$USER" /opt/growthifyx-ai-sales`, `cd /opt/growthifyx-ai-sales`, then `git clone <REPOSITORY_URL> .`. For an upload, copy the repository contents there and keep `.env` out of the upload.
+```bash
+sudo mkdir -p /opt/growthifyx-ai-sales && sudo chown "$USER":"$USER" /opt/growthifyx-ai-sales
+```
 
-## Production environment
+Then enter the directory and clone or upload the repository:
 
-Run `cp .env.production.example .env`, `chmod 600 .env`, `openssl rand -base64 48`, `openssl rand -base64 32`, then edit `.env`. Put the first random value in `SESSION_SECRET` and the second in `APP_ENCRYPTION_KEY`; they must differ. Set `POSTGRES_PASSWORD`, URL-encode it inside `DATABASE_URL`, set `ADMIN_EMAIL`, and keep `DEV_PREVIEW=false`.
+```bash
+cd /opt/growthifyx-ai-sales
+git clone <REPOSITORY_URL> .
+```
 
-Meta values may be blank for post-login configuration in Settings → Meta Platform. Do not add a global DeepSeek key or Telegram token.
+Do not upload `.env` from a workstation.
 
-## First start
+## Configure production
 
-Run `chmod +x scripts/*.sh`, `docker compose config --quiet`, then `./scripts/deploy.sh`, then `docker compose ps`. Startup is PostgreSQL health → app `prisma migrate deploy` → app health → worker and Caddy. A migration failure keeps the app unhealthy and is visible in `docker compose logs app`.
+```bash
+cp .env.production.example .env
+chmod 600 .env
+openssl rand -base64 48
+openssl rand -base64 32
+```
+
+Put the two random values in different `SESSION_SECRET` and `APP_ENCRYPTION_KEY` fields. Set `POSTGRES_PASSWORD`, URL-encode that password in `DATABASE_URL`, set `ADMIN_EMAIL`, and keep `DEV_PREVIEW=false`. The database hostname must remain `postgres` because it is the Compose service name.
+
+Do not add a global DeepSeek key or Telegram token. Those credentials are per Page and remain behind the encryption boundary. Meta is the only global platform integration.
+
+## First deployment
+
+```bash
+chmod +x scripts/*.sh docker/*.sh
+./scripts/deploy.sh
+docker compose ps
+```
+
+The script validates Compose, builds the app and worker image, validates the production environment, starts PostgreSQL, waits for its health check, starts the app so it runs `prisma migrate deploy`, waits for app health, then starts the worker and Caddy. A migration failure leaves app unhealthy and prints app logs.
 
 ## Super Admin bootstrap
 
-Run `docker compose run --rm -it app npm run admin:bootstrap`. This is idempotent: it creates the only Super Admin when none exists, hashes with Argon2id, never prints the password, and does nothing if an admin already exists. For a non-interactive terminal, pass `ADMIN_PASSWORD` only through a protected process environment; never put it in Git or shell history.
+After app health succeeds:
 
-## HTTPS and health verification
+```bash
+docker compose run --rm -it app npm run admin:bootstrap
+```
 
-Run `curl --fail --silent --show-error https://ai.growthifyx.space/api/health`, `curl --fail --silent --show-error -I https://ai.growthifyx.space/privacy`, `curl --fail --silent --show-error -I https://ai.growthifyx.space/data-deletion`, `curl --fail --silent --show-error -I https://ai.growthifyx.space/api/meta/oauth/callback`, and `docker compose ps`. The callback may return parameter validation without OAuth parameters; that still verifies routing. Confirm the certificate is for `ai.growthifyx.space`, not the VPS IP.
+Set `ADMIN_EMAIL` in `.env` to avoid the email prompt. The password is entered interactively, must be at least 12 characters, is Argon2id-hashed, is never printed, and is never stored in the repository. The command is idempotent and refuses to create a second administrator. For a non-interactive terminal, pass `ADMIN_PASSWORD` through a protected process environment only.
 
-## Future update
+## HTTPS and route verification
 
-Run `git pull --ff-only` followed by `./scripts/update.sh` from `/opt/growthifyx-ai-sales`.
+```bash
+curl --fail --silent --show-error https://ai.growthifyx.space/api/health
+curl --fail --silent --show-error -I https://ai.growthifyx.space/privacy
+curl --fail --silent --show-error -I https://ai.growthifyx.space/data-deletion
+curl --fail --silent --show-error -I https://ai.growthifyx.space/api/meta/oauth/callback
+docker compose ps
+```
 
-## Logs
+The OAuth callback may return a parameter-validation response without OAuth parameters; that still verifies routing. Confirm the certificate covers `ai.growthifyx.space`. PostgreSQL must have no host port mapping.
 
-Use `docker compose logs --tail=200 app`, `docker compose logs --tail=200 worker`, `docker compose logs --tail=200 postgres`, and `docker compose logs --tail=200 caddy`.
+## Updates and logs
 
-## Backup and restore
+Before an update, preserve the current commit: `git rev-parse HEAD`. Then run `git pull --ff-only` followed by `./scripts/update.sh`. The update makes a database backup first by default. To inspect services:
 
-Backups must be outside the PostgreSQL data directory. Run `sudo mkdir -p /var/backups/growthifyx`, `sudo chown "$USER":"$USER" /var/backups/growthifyx`, `./scripts/backup-postgres.sh /var/backups/growthifyx`, and `find /var/backups/growthifyx -maxdepth 1 -type f -printf '%f\n' | sort`.
+```bash
+docker compose logs --tail=200 app
+docker compose logs --tail=200 worker
+docker compose logs --tail=200 postgres
+docker compose logs --tail=200 caddy
+```
 
-Restore is guarded: `./scripts/restore-postgres.sh /var/backups/growthifyx/growthifyx-YYYYMMDD-HHMMSS.dump --confirm-restore`, then `docker compose up -d worker caddy`. After the first VPS restore, verify login, Page isolation, configuration lifecycle, orders, outbox state, and AI Usage. Do not claim restore success before that smoke test.
+The Compose JSON log driver retains five 10 MB files per service; Caddy also emits structured JSON access logs.
+
+## Backups
+
+```bash
+sudo mkdir -p /var/backups/growthifyx
+sudo chown "$USER":"$USER" /var/backups/growthifyx
+./scripts/backup-postgres.sh /var/backups/growthifyx
+find /var/backups/growthifyx -maxdepth 1 -type f -printf '%f\n' | sort
+```
+
+Keep this directory outside the PostgreSQL volume and copy backups to protected off-host storage according to the VPS policy. The script keeps seven daily and four weekly custom-format dumps.
+
+Meta values and permissions are documented in [META_SETUP.md](META_SETUP.md). The first real Page procedure is [FIRST_LIVE_PAGE.md](FIRST_LIVE_PAGE.md).

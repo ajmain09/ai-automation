@@ -1,17 +1,51 @@
-# Recovery and backup
+# Recovery and rollback
+
+## Application rollback
+
+If an update fails its app, worker, Caddy, or public health check:
+
+```bash
+docker compose ps
+docker compose logs --tail=200 app worker caddy
+git log --oneline -5
+git switch --detach <known-good-commit>
+./scripts/deploy.sh
+```
+
+Use the commit saved before the update. Do not delete the PostgreSQL volume. After the known-good build is healthy, run the public route checks and verify the first Page remains paused until readiness is confirmed.
+
+## Worker recovery
+
+The worker is stateless. PostgreSQL jobs are durable and use leases, retry limits, expiry, and dead-letter states. A worker restart releases expired leases on the next claim cycle:
+
+```bash
+docker compose restart worker
+docker compose ps
+docker compose logs --tail=200 worker
+```
+
+Do not manually edit job rows as a first response. Review dead-letter Issues and correct the provider or configuration cause before retrying through the operator flow.
+
+## PostgreSQL backup
+
+Run backups outside the database data directory:
+
+```bash
+./scripts/backup-postgres.sh /var/backups/growthifyx
+```
+
+The output is a PostgreSQL custom-format dump with mode `600`. The script refuses to retain an empty dump and retains seven daily plus four weekly copies.
+
+## PostgreSQL restore
+
+Restore is destructive and requires an approved maintenance window. Keep an additional backup before starting. The command stops app, worker, and Caddy, leaves PostgreSQL running, restores the selected dump, applies committed Prisma migrations, and starts services only after health checks pass:
+
+```bash
+./scripts/restore-postgres.sh /var/backups/growthifyx/growthifyx-YYYYMMDD-HHMMSS.dump --confirm-restore
+```
+
+After restore, verify login, Page isolation, draft/live configuration lifecycle, order snapshots, Telegram outbox state, and Page AI Usage. A restore smoke test is VPS-only and must not be marked complete from local checks.
 
 ## Admin recovery
 
-Local preview uses `.env.local` only and has no production recovery meaning. Never reuse its `admin@local.test` credentials or session secret on the VPS.
-
-Issue a short-lived, single-use recovery token through the one-admin operator flow. Store only its SHA-256 hash. Set a new password of at least 12 characters, invalidate the token, and review the `admin.password_reset` audit entry. There is no default production password. Never write a password into source control or AI context.
-
-## PostgreSQL backups
-
-Use `scripts/backup-postgres.sh` on the Linux VPS with `pg_dump`, encrypted storage, and a protected backup directory. The PowerShell equivalent remains available for operator workstations. Keep seven daily backups and four weekly backups. Keep backups outside the application container and test retention separately from application deployment.
-
-Restore with `scripts/restore-postgres.sh <backup> --confirm-restore` only during an approved maintenance window. Stop app/worker writes, restore, run `prisma migrate deploy`, restart services, and verify Page isolation, login, configuration lifecycle, order snapshots, outbox state, and AI usage.
-
-Actual PostgreSQL restore smoke testing is DEFERRED TO VPS; it is not claimed as locally tested.
-
-The seed command creates or updates only the single administrator and does not create a demo Page. Create Page workspaces through the authenticated onboarding flow.
+There is no default production password. Use the existing short-lived, single-use recovery-token operator flow, set a new password of at least 12 characters, invalidate the token, and review the `admin.password_reset` audit entry. Never place a password in source control, logs, or a committed environment file.
