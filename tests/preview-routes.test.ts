@@ -12,6 +12,21 @@ beforeEach(() => {
 });
 
 describe("database-free preview routes", () => {
+  it("keeps the three dashboard Page IDs resolvable from one store", async () => {
+    const { getPreviewPages, getPreviewPage } = await import("@/services/preview/store");
+    const pages = getPreviewPages();
+    expect(pages).toHaveLength(3);
+    expect(pages.every((page) => getPreviewPage(page.id)?.id === page.id)).toBe(true);
+    expect(getPreviewPage("99999999-9999-4999-8999-999999999999")).toBeNull();
+  });
+
+  it("connects a preview Page without OAuth state validation", async () => {
+    const { connectPreviewPage, getPreviewPage } = await import("@/services/preview/store");
+    const page = getPreviewPage("11111111-1111-4111-8111-111111111113")!;
+    expect(connectPreviewPage(page.id, "preview-meta-page-001", "Karseell Bangladesh")?.connectionStatus).toBe("CONNECTED");
+    expect(getPreviewPage(page.id)?.metaPageId).toBe("preview-meta-page-001");
+  });
+
   it("loads every dashboard data source without Prisma", async () => {
     const pageId = "11111111-1111-4111-8111-111111111111";
     const [{ getDashboardData, getPages, getPageById }, { getOpenIssues }, { getPageOrders }, { getPageUsage }, { getSystemHealth }, { checkPageReadiness }, { retrieveRelevantProducts }] = await Promise.all([

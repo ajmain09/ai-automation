@@ -19,7 +19,7 @@ services:
       META_VERIFY_TOKEN: ${META_VERIFY_TOKEN:-}
       META_WEBHOOK_URL: ${META_WEBHOOK_URL:-https://ai.growthifyx.space/api/meta/webhook}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
-      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-chat}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-v4-flash}
       DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
       DEEPSEEK_INPUT_RATE: ${DEEPSEEK_INPUT_RATE:-0}
       DEEPSEEK_OUTPUT_RATE: ${DEEPSEEK_OUTPUT_RATE:-0}
@@ -38,7 +38,7 @@ services:
       APP_URL: ${APP_URL:-https://ai.growthifyx.space}
       NODE_ENV: ${NODE_ENV:-production}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
-      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-chat}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-v4-flash}
       DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
       DEEPSEEK_INPUT_RATE: ${DEEPSEEK_INPUT_RATE:-0}
       DEEPSEEK_OUTPUT_RATE: ${DEEPSEEK_OUTPUT_RATE:-0}

@@ -23,7 +23,7 @@ const envSchema = z.object({
   META_WEBHOOK_URL: z.string().url().optional(),
   META_GRAPH_VERSION: z.string().regex(/^v\d+\.\d+$/).default("v23.0"),
   DEEPSEEK_API_KEY: z.string().optional(),
-  DEEPSEEK_MODEL: z.string().default("deepseek-chat"),
+  DEEPSEEK_MODEL: z.string().default("deepseek-v4-flash").transform((model) => model === "deepseek-chat" || model === "deepseek-reasoner" ? "deepseek-v4-flash" : model),
   DEEPSEEK_BASE_URL: z.string().url().default("https://api.deepseek.com"),
   DEEPSEEK_INPUT_RATE: z.coerce.number().nonnegative().default(0),
   DEEPSEEK_OUTPUT_RATE: z.coerce.number().nonnegative().default(0),
