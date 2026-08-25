@@ -49,6 +49,8 @@ CREATE TABLE "PageTelegramSettings" (
 CREATE UNIQUE INDEX "PageTelegramSettings_pageId_key" ON "PageTelegramSettings"("pageId");
 ALTER TABLE "PageTelegramSettings" ADD CONSTRAINT "PageTelegramSettings_pageId_fkey" FOREIGN KEY ("pageId") REFERENCES "Page"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
+ALTER TABLE "ApiUsage" DROP CONSTRAINT IF EXISTS "ApiUsage_pricingProfileId_fkey";
+
 ALTER TABLE "AiPricingProfile" RENAME TO "PageAiPricingProfile";
 ALTER TABLE "PageAiPricingProfile" ADD COLUMN "pageId" UUID;
 ALTER TABLE "PageAiPricingProfile" DROP CONSTRAINT IF EXISTS "AiPricingProfile_pkey";
@@ -61,7 +63,6 @@ CREATE INDEX "PageAiPricingProfile_pageId_model_effectiveFrom_idx" ON "PageAiPri
 ALTER TABLE "PageAiPricingProfile" ALTER COLUMN "pageId" SET NOT NULL;
 ALTER TABLE "PageAiPricingProfile" ADD CONSTRAINT "PageAiPricingProfile_pageId_fkey" FOREIGN KEY ("pageId") REFERENCES "PageCostSettings"("pageId") ON DELETE CASCADE ON UPDATE CASCADE;
 
-ALTER TABLE "ApiUsage" DROP CONSTRAINT IF EXISTS "ApiUsage_pricingProfileId_fkey";
 ALTER TABLE "ApiUsage" ADD CONSTRAINT "ApiUsage_pricingProfileId_fkey" FOREIGN KEY ("pricingProfileId") REFERENCES "PageAiPricingProfile"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 DROP TABLE IF EXISTS "AiProviderSetting";
