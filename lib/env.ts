@@ -18,6 +18,7 @@ const envSchema = z.object({
   META_APP_ID: z.string().optional(),
   META_APP_SECRET: z.string().optional(),
   META_VERIFY_TOKEN: z.preprocess((value) => value === "" ? undefined : value, z.string().min(16).optional()),
+  META_LOGIN_CONFIG_ID: z.string().trim().optional(),
   META_REDIRECT_URI: z.string().url().optional(),
   META_WEBHOOK_URL: z.string().url().optional(),
   META_GRAPH_VERSION: z.string().regex(/^v\d+\.\d+$/).default("v23.0"),

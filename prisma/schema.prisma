@@ -442,6 +442,8 @@ model OAuthState {
   stateHash          String    @unique
   redirectUri        String
   encryptedUserToken String?
+  permissionDiagnostics Json?
+  callbackCompletedAt DateTime?
   expiresAt          DateTime
   createdAt          DateTime  @default(now())
   consumedAt         DateTime?
@@ -669,6 +671,7 @@ model MetaPlatformSetting {
   appSecretEncrypted   String?
   verifyTokenEncrypted String?
   graphApiVersion      String    @default("v23.0")
+  loginConfigurationId  String?
   oauthRedirectUri     String?
   webhookUrl           String?
   status               String    @default("NOT_CONFIGURED")
