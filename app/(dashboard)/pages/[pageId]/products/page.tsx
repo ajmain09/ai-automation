@@ -1,4 +1,4 @@
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { getPageById } from "@/services/pages/queries";
 import { ProductForm } from "@/components/pages/product-form";
 import { ProductActions } from "@/components/pages/product-actions";
@@ -7,7 +7,7 @@ import { PageTabs } from "@/components/pages/page-tabs";
 export const dynamic = "force-dynamic";
 
 export default async function ProductsPage({ params }: { params: Promise<{ pageId: string }> }) {
-  const { pageId } = await params; const page = await getPageById(pageId); if (!page) notFound();
+  const { pageId } = await params; const page = await getPageById(pageId); if (!page) notFound(); if (pageId !== page.slug) redirect(`/pages/${page.slug}/products`);
   const active = page.products.filter((product) => product.active).length;
   return <main className="workspace"><div className="page-heading"><div><div className="eyebrow">{page.name} / Products</div><h1>Products</h1><p className="subtitle">{active} active · manage the catalog for this Page.</p></div><ProductForm pageId={page.id} /></div><PageTabs pageId={page.slug} active="Products" /><section className="card"><div className="section-head"><div><h2>Catalog</h2><span className="muted">Products and variants are page-scoped.</span></div></div>{page.products.length === 0 ? <div className="empty-state"><h3>No products yet</h3><p>Add a product with its first variant to create a draft catalog.</p></div> : <div className="table-wrap"><table><thead><tr><th>Product</th><th>Variant</th><th>Price</th><th>Status</th><th>Actions</th></tr></thead><tbody>{page.products.map((product) => product.variants.length ? product.variants.map((variant) => <tr key={variant.id}><td><div className="product-name">{product.name}</div><div className="field-hint">{product.description}</div></td><td>{variant.sku} · {[variant.size, variant.color].filter(Boolean).join(" · ") || "Default"}</td><td>{page.settings?.currency ?? "USD"} {Number(variant.currentPrice).toFixed(2)}</td><td><span className={`status-chip ${product.active ? "green" : "gray"}`}><span className="dot" />{product.active ? "Active" : "Inactive"}</span></td><td><ProductActions pageId={page.id} product={{ id: product.id, name: product.name, description: product.description, active: product.active, variant: { sku: variant.sku, currentPrice: Number(variant.currentPrice), oldPrice: variant.oldPrice === null ? null : Number(variant.oldPrice), size: variant.size, color: variant.color } }} /></td></tr>) : <tr key={product.id}><td className="product-name">{product.name}</td><td>Awaiting variant</td><td>—</td><td>Draft</td><td><ProductActions pageId={page.id} product={{ id: product.id, name: product.name, description: product.description, active: product.active, variant: { sku: "DRAFT", currentPrice: 1, oldPrice: null, size: null, color: null } }} /></td></tr>)}</tbody></table></div>}</section></main>;
 }

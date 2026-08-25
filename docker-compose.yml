@@ -1,67 +1,94 @@
 services:
-  app:
-    build: .
-    command: npm run start
-    ports:
-      - "3000:3000"
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
     environment:
-      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in the deployment environment}
-      SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET in the deployment environment}
-      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?Set APP_ENCRYPTION_KEY in the deployment environment}
-      APP_URL: ${APP_URL:-https://ai.growthifyx.space}
+      POSTGRES_USER: ${POSTGRES_USER:-growthifyx}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-growthifyx}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    stop_grace_period: 60s
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    init: true
+    command: ["/app/docker/app-entrypoint.sh"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
+      SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET in .env}
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?Set APP_ENCRYPTION_KEY in .env}
+      APP_URL: ${APP_URL:?Set APP_URL in .env}
       NODE_ENV: ${NODE_ENV:-production}
-      ADMIN_EMAIL: ${ADMIN_EMAIL:?Set ADMIN_EMAIL in the deployment environment}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in the deployment environment}
+      DEV_PREVIEW: ${DEV_PREVIEW:-false}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
       META_APP_ID: ${META_APP_ID:-}
       META_APP_SECRET: ${META_APP_SECRET:-}
       META_REDIRECT_URI: ${META_REDIRECT_URI:-https://ai.growthifyx.space/api/meta/oauth/callback}
       META_GRAPH_VERSION: ${META_GRAPH_VERSION:-v23.0}
       META_VERIFY_TOKEN: ${META_VERIFY_TOKEN:-}
       META_WEBHOOK_URL: ${META_WEBHOOK_URL:-https://ai.growthifyx.space/api/meta/webhook}
-      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
-      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-v4-flash}
-      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
-      DEEPSEEK_INPUT_RATE: ${DEEPSEEK_INPUT_RATE:-0}
-      DEEPSEEK_OUTPUT_RATE: ${DEEPSEEK_OUTPUT_RATE:-0}
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
-      TELEGRAM_DEFAULT_CHAT_ID: ${TELEGRAM_DEFAULT_CHAT_ID:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      TZ: ${TZ:-Asia/Dhaka}
     depends_on:
       postgres:
         condition: service_healthy
-  worker:
-    build: .
-    command: npx tsx worker/index.ts
-    environment:
-      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in the deployment environment}
-      SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET in the deployment environment}
-      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?Set APP_ENCRYPTION_KEY in the deployment environment}
-      APP_URL: ${APP_URL:-https://ai.growthifyx.space}
-      NODE_ENV: ${NODE_ENV:-production}
-      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
-      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-v4-flash}
-      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
-      DEEPSEEK_INPUT_RATE: ${DEEPSEEK_INPUT_RATE:-0}
-      DEEPSEEK_OUTPUT_RATE: ${DEEPSEEK_OUTPUT_RATE:-0}
-    depends_on:
-      postgres:
-        condition: service_healthy
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-growthifyx}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the deployment environment}
-      POSTGRES_DB: ${POSTGRES_DB:-growthifyx}
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - backend
+      - edge
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U growthifyx -d growthifyx"]
-      interval: 5s
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
       timeout: 5s
-      retries: 10
+      retries: 12
+      start_period: 30s
+    stop_grace_period: 30s
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: ["npx", "tsx", "worker/index.ts"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
+      SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET in .env}
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?Set APP_ENCRYPTION_KEY in .env}
+      APP_URL: ${APP_URL:?Set APP_URL in .env}
+      NODE_ENV: ${NODE_ENV:-production}
+      DEV_PREVIEW: ${DEV_PREVIEW:-false}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      TZ: ${TZ:-Asia/Dhaka}
+    depends_on:
+      app:
+        condition: service_healthy
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"process.kill(1, 0)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    stop_grace_period: 45s
+
   caddy:
     image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
     ports:
       - "80:80"
       - "443:443"
@@ -69,8 +96,14 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
-    depends_on:
-      - app
+    networks:
+      - edge
+    stop_grace_period: 30s
+
+networks:
+  backend:
+    internal: true
+  edge:
 
 volumes:
   postgres_data:

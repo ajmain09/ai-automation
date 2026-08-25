@@ -14,7 +14,6 @@ const envSchema = z.object({
   DATABASE_URL: z.string().optional(),
   SESSION_SECRET: z.string().optional(),
   ADMIN_EMAIL: z.string().email().optional(),
-  ADMIN_PASSWORD: z.string().min(12).optional(),
   APP_ENCRYPTION_KEY: z.string().optional(),
   META_APP_ID: z.string().optional(),
   META_APP_SECRET: z.string().optional(),
@@ -22,13 +21,6 @@ const envSchema = z.object({
   META_REDIRECT_URI: z.string().url().optional(),
   META_WEBHOOK_URL: z.string().url().optional(),
   META_GRAPH_VERSION: z.string().regex(/^v\d+\.\d+$/).default("v23.0"),
-  DEEPSEEK_API_KEY: z.string().optional(),
-  DEEPSEEK_MODEL: z.string().default("deepseek-v4-flash").transform((model) => model === "deepseek-chat" || model === "deepseek-reasoner" ? "deepseek-v4-flash" : model),
-  DEEPSEEK_BASE_URL: z.string().url().default("https://api.deepseek.com"),
-  DEEPSEEK_INPUT_RATE: z.coerce.number().nonnegative().default(0),
-  DEEPSEEK_OUTPUT_RATE: z.coerce.number().nonnegative().default(0),
-  TELEGRAM_BOT_TOKEN: z.string().optional(),
-  TELEGRAM_DEFAULT_CHAT_ID: z.string().optional(),
 }).superRefine((value, context) => {
   const preview = value.NODE_ENV === "development" && value.DEV_PREVIEW;
   const requireValue = (key: keyof typeof value, message: string) => {
@@ -51,20 +43,16 @@ const envSchema = z.object({
   requireValue("DATABASE_URL", "DATABASE_URL is required outside database-free preview");
   requireValue("SESSION_SECRET", "SESSION_SECRET is required outside database-free preview");
   requireValue("APP_ENCRYPTION_KEY", "APP_ENCRYPTION_KEY is required outside database-free preview");
-  requireValue("ADMIN_EMAIL", "ADMIN_EMAIL is required outside database-free preview");
-  requireValue("ADMIN_PASSWORD", "ADMIN_PASSWORD is required outside database-free preview");
   if (value.SESSION_SECRET && (value.SESSION_SECRET.length < 32 || PLACEHOLDER.test(value.SESSION_SECRET))) context.addIssue({ code: z.ZodIssueCode.custom, path: ["SESSION_SECRET"], message: "SESSION_SECRET must be at least 32 non-placeholder characters" });
   if (value.APP_ENCRYPTION_KEY && (value.APP_ENCRYPTION_KEY.length < 32 || PLACEHOLDER.test(value.APP_ENCRYPTION_KEY))) context.addIssue({ code: z.ZodIssueCode.custom, path: ["APP_ENCRYPTION_KEY"], message: "APP_ENCRYPTION_KEY must be at least 32 non-placeholder characters" });
-  if (value.ADMIN_PASSWORD && PLACEHOLDER.test(value.ADMIN_PASSWORD)) context.addIssue({ code: z.ZodIssueCode.custom, path: ["ADMIN_PASSWORD"], message: "ADMIN_PASSWORD must be explicitly replaced" });
-  if (!value.DATABASE_URL?.startsWith("postgresql://") || /change-me|localhost/i.test(value.DATABASE_URL ?? "")) context.addIssue({ code: z.ZodIssueCode.custom, path: ["DATABASE_URL"], message: "DATABASE_URL must point to PostgreSQL" });
+  if (!value.DATABASE_URL?.startsWith("postgresql://") || /change-me|localhost|URL_ENCODED_PASSWORD/i.test(value.DATABASE_URL ?? "")) context.addIssue({ code: z.ZodIssueCode.custom, path: ["DATABASE_URL"], message: "DATABASE_URL must point to the production PostgreSQL service" });
 
   if (value.NODE_ENV === "production") {
     if (value.APP_URL !== PRODUCTION_URL) context.addIssue({ code: z.ZodIssueCode.custom, path: ["APP_URL"], message: `Production APP_URL must be ${PRODUCTION_URL}` });
-    for (const key of ["META_APP_ID", "META_APP_SECRET", "META_VERIFY_TOKEN", "META_REDIRECT_URI", "META_WEBHOOK_URL", "DEEPSEEK_API_KEY"] as const) requireValue(key, `${key} is required in production`);
-    if (value.META_REDIRECT_URI !== PRODUCTION_META_REDIRECT) context.addIssue({ code: z.ZodIssueCode.custom, path: ["META_REDIRECT_URI"], message: `Production Meta redirect URI must be ${PRODUCTION_META_REDIRECT}` });
-    if (value.META_WEBHOOK_URL !== PRODUCTION_META_WEBHOOK) context.addIssue({ code: z.ZodIssueCode.custom, path: ["META_WEBHOOK_URL"], message: `Production Meta webhook URL must be ${PRODUCTION_META_WEBHOOK}` });
+    if (value.META_REDIRECT_URI && value.META_REDIRECT_URI !== PRODUCTION_META_REDIRECT) context.addIssue({ code: z.ZodIssueCode.custom, path: ["META_REDIRECT_URI"], message: `Production Meta redirect URI must be ${PRODUCTION_META_REDIRECT}` });
+    if (value.META_WEBHOOK_URL && value.META_WEBHOOK_URL !== PRODUCTION_META_WEBHOOK) context.addIssue({ code: z.ZodIssueCode.custom, path: ["META_WEBHOOK_URL"], message: `Production Meta webhook URL must be ${PRODUCTION_META_WEBHOOK}` });
     if (value.META_VERIFY_TOKEN && PLACEHOLDER.test(value.META_VERIFY_TOKEN)) context.addIssue({ code: z.ZodIssueCode.custom, path: ["META_VERIFY_TOKEN"], message: "META_VERIFY_TOKEN must be replaced" });
-    if (value.ADMIN_EMAIL?.toLowerCase() === "admin@local.test" || value.ADMIN_PASSWORD === "Admin123!") context.addIssue({ code: z.ZodIssueCode.custom, path: ["ADMIN_EMAIL"], message: "Local preview credentials are forbidden in production" });
+    if (value.ADMIN_EMAIL?.toLowerCase() === "admin@local.test") context.addIssue({ code: z.ZodIssueCode.custom, path: ["ADMIN_EMAIL"], message: "Local preview credentials are forbidden in production" });
   }
 });
 

@@ -40,6 +40,7 @@ export function budgetState(input: { usedBdt: number; budgetBdt?: number | null;
   if (input.paused) return "PAUSED_BY_BUDGET" as const;
   if (!input.budgetBdt || input.budgetBdt <= 0) return "HEALTHY" as const;
   if (input.usedBdt >= input.budgetBdt) return "LIMIT_REACHED" as const;
-  if (input.usedBdt >= input.budgetBdt * input.warningThreshold) return "WARNING" as const;
+  const threshold = input.warningThreshold > 1 ? input.warningThreshold / 100 : input.warningThreshold;
+  if (input.usedBdt >= input.budgetBdt * threshold) return "WARNING" as const;
   return "HEALTHY" as const;
 }

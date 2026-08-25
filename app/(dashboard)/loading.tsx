@@ -1,0 +1,1 @@
+export default function DashboardLoading() { return <main className="workspace"><section className="card card-pad" aria-busy="true"><div className="skeleton skeleton-heading" /><div className="skeleton skeleton-line" /><div className="skeleton skeleton-panel" /></section></main>; }

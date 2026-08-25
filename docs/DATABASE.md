@@ -18,6 +18,8 @@ All page-owned business queries include `pageId`. Order confirmation snapshots s
 
 Business and catalog edits create DRAFT configuration versions. Rollback rematerializes the selected version and deactivates catalog rows not present in that version; live order snapshots remain immutable.
 
-`ApiUsage` stores provider, model, call type, token totals, provider usage, request ID, attempt number, rate snapshots, estimated cost, status, and latency. It is the sole analytics dataset and is always scoped by `pageId`. Attempts are created before provider execution, so failed attempts remain visible.
+`ApiUsage` stores provider, model, call type, token totals, cached input tokens, provider usage, request ID, attempt number, Page pricing/FX snapshots, USD and BDT cost, status, and latency. It is the sole analytics dataset and is always scoped by `pageId`. Attempts are created before provider execution, so failed attempts remain visible. `PageAiSettings`, `PageTelegramSettings`, `PageCostSettings`, and `PageAiPricingProfile` have mandatory one-Page ownership; encrypted secrets are never selected into browser responses.
+
+The old global AI provider, Telegram, FX, pricing, and budget models are removed. `PageCostSettings.reservedBdt` is used by the atomic hard-limit reservation path. A failed reservation sets only that Page to `PAUSED_BY_BUDGET` and creates a Page-scoped Issue.
 
 PostgreSQL is the only required stateful service; Redis is intentionally not used. The checked-in Step 3 migration is additive and includes a deterministic UUID backfill for existing orders. Live migration application and restore smoke testing are deferred to the VPS because local PostgreSQL is unavailable.

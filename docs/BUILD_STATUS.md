@@ -30,4 +30,4 @@ DEFERRED TO VPS:
 
 EXTERNAL CONFIG REQUIRED:
 
-- Production `DATABASE_URL`, `SESSION_SECRET`, explicit admin password/recovery delivery, Meta app credentials and webhook verification, DeepSeek key/rates, Telegram destination, domain/Caddy values, and backup storage credentials.
+- Production `DATABASE_URL`, `SESSION_SECRET`, explicit admin password/recovery delivery, Meta app credentials and webhook verification, per-Page DeepSeek/Telegram configuration, domain/Caddy values, and backup storage credentials.

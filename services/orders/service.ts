@@ -28,7 +28,16 @@ export async function confirmDraft(input: { pageId: string; customerId: string; 
   return prisma.$transaction(async (tx) => {
     await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`${input.pageId}:${input.customerId}`}, 0))`;
     const session = await tx.orderSession.findFirst({ where: { pageId: input.pageId, customerId: input.customerId, status: "ACTIVE" }, orderBy: { updatedAt: "desc" } });
-    if (!session) throw new Error("No active order draft");
+    if (!session) {
+      // A replayed confirmation after the transaction committed must return
+      // the existing order instead of creating a second order/outbox event.
+      const completed = await tx.orderSession.findFirst({ where: { pageId: input.pageId, customerId: input.customerId, status: "COMPLETED", orderId: { not: null } }, orderBy: { updatedAt: "desc" } });
+      if (completed?.orderId) {
+        const existing = await tx.order.findFirst({ where: { id: completed.orderId, pageId: input.pageId, customerId: input.customerId } });
+        if (existing) return existing;
+      }
+      throw new Error("No active order draft");
+    }
     const draft = session.state as unknown as OrderDraft;
     const validation = validateOrderDraft(draft, input.requiredFields, input.product, input.configurationVersion, input.countryCode ?? "US");
     if (!validation.valid) {

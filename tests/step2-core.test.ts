@@ -24,6 +24,7 @@ describe("Step 2 conversation safety", () => {
     expect(canSendReply({ generatedVersion: 20, currentVersion: 21 }).ok).toBe(false);
     expect(canSendReply({ generatedVersion: 20, currentVersion: 20, manualReplyUntil: new Date(now.getTime() + 1000), now }).reason).toBe("MANUAL_REPLY_COLLISION");
     expect(canSendReply({ generatedVersion: 20, currentVersion: 20, expiresAt: new Date(now.getTime() - 1), now }).reason).toBe("JOB_EXPIRED");
+    expect(canSendReply({ generatedVersion: 20, currentVersion: 20, lastCustomerMessageAt: new Date(now.getTime() - 25 * 60 * 60 * 1000), now }).reason).toBe("MESSAGING_WINDOW_EXPIRED");
   });
 
   it("keeps a conversation sequential while allowing independent conversations", async () => {

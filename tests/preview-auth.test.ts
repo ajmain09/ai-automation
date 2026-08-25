@@ -20,7 +20,7 @@ vi.mock("@/lib/db/prisma", () => ({
   prisma: new Proxy({}, { get() { prismaAccess(); throw new Error("Preview authentication accessed Prisma"); } }),
 }));
 
-const ENV_KEYS = ["NODE_ENV", "DEV_PREVIEW", "PREVIEW_ADMIN_EMAIL", "PREVIEW_ADMIN_PASSWORD", "SESSION_SECRET", "DATABASE_URL", "APP_URL", "APP_ENCRYPTION_KEY", "ADMIN_EMAIL", "ADMIN_PASSWORD", "META_APP_ID", "META_APP_SECRET", "META_VERIFY_TOKEN", "META_REDIRECT_URI", "META_WEBHOOK_URL", "DEEPSEEK_API_KEY"];
+const ENV_KEYS = ["NODE_ENV", "DEV_PREVIEW", "PREVIEW_ADMIN_EMAIL", "PREVIEW_ADMIN_PASSWORD", "SESSION_SECRET", "DATABASE_URL", "APP_URL", "APP_ENCRYPTION_KEY", "ADMIN_EMAIL", "ADMIN_PASSWORD", "META_APP_ID", "META_APP_SECRET", "META_VERIFY_TOKEN", "META_REDIRECT_URI", "META_WEBHOOK_URL"];
 const originalEnv = new Map(ENV_KEYS.map((key) => [key, process.env[key]]));
 const setProcessEnv = (key: string, value: string) => { (process.env as Record<string, string | undefined>)[key] = value; };
 
@@ -97,7 +97,6 @@ describe("production preview guard", () => {
     process.env.META_VERIFY_TOKEN = "real-production-verify-token";
     process.env.META_REDIRECT_URI = "https://ai.growthifyx.space/api/meta/oauth/callback";
     process.env.META_WEBHOOK_URL = "https://ai.growthifyx.space/api/meta/webhook";
-    process.env.DEEPSEEK_API_KEY = "real-deepseek-key";
     const { getEnv } = await import("@/lib/env");
     expect(() => getEnv()).toThrow(/preview credentials/i);
   });

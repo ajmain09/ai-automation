@@ -6,20 +6,20 @@ import { classifyFailure } from "@/services/resilience/retry";
 import { upsertActionableIssue } from "@/services/issues/service";
 import { Prisma } from "@prisma/client";
 
-export async function sendSafeReply(input: { pageId: string; conversationId: string; recipientPsid: string; text: string; generatedVersion: number; jobExpiresAt?: Date | null; outboundAttemptKey: string }) {
+export async function sendSafeReply(input: { pageId: string; conversationId: string; recipientPsid: string; text: string; generatedVersion: number; generatedConfigurationVersion?: number; jobExpiresAt?: Date | null; outboundAttemptKey: string }) {
   const existing = await prisma.outboundMessage.findUnique({ where: { outboundAttemptKey: input.outboundAttemptKey } });
   if (existing) return existing;
-  const global = await prisma.systemSetting.findUnique({ where: { key: "global_ai_paused" } });
   const state = await prisma.conversation.findFirst({ where: { id: input.conversationId, pageId: input.pageId }, include: { page: { include: { connection: true, settings: true } } } });
   if (!state) throw new Error("Conversation not found in page scope");
-  const paused = global?.value === true || state.page.settings?.globalAiPaused || !state.page.aiEnabled || state.page.connectionStatus !== "CONNECTED";
-  const check = canSendReply({ generatedVersion: input.generatedVersion, currentVersion: state.version, manualReplyUntil: state.manualReplyUntil, expiresAt: input.jobExpiresAt });
+  const paused = !state.page.isActive || !state.page.aiEnabled || state.page.aiStatus === "PAUSED_BY_BUDGET" || state.page.connectionStatus !== "CONNECTED";
+  const check = canSendReply({ generatedVersion: input.generatedVersion, currentVersion: state.version, manualReplyUntil: state.manualReplyUntil, expiresAt: input.jobExpiresAt, lastCustomerMessageAt: state.lastCustomerMessageAt });
   const live = await prisma.configurationVersion.findFirst({ where: { pageId: input.pageId, status: "LIVE" }, select: { version: true } });
-  const configInvalid = !live || state.page.lifecycleStatus !== "LIVE";
+  const configInvalid = !live || state.page.lifecycleStatus !== "LIVE" || (input.generatedConfigurationVersion !== undefined && live.version !== input.generatedConfigurationVersion);
   const payload = { recipient: input.recipientPsid, text: input.text };
+  const blockedReason = !state.page.isActive ? "Page inactive" : !state.page.aiEnabled ? "AI paused" : state.page.aiStatus === "PAUSED_BY_BUDGET" ? "Blocked by Page budget" : state.page.connectionStatus !== "CONNECTED" ? "Meta connection unavailable" : configInvalid ? "Configuration changed or is not LIVE" : !check.ok ? check.reason : null;
   let outbound;
   try {
-    outbound = await prisma.outboundMessage.create({ data: { pageId: input.pageId, conversationId: input.conversationId, outboundAttemptKey: input.outboundAttemptKey, payload, status: paused || !check.ok || configInvalid ? "FAILED_PERMANENT" : "PENDING", lastError: paused ? "AI paused" : configInvalid ? "Live configuration unavailable" : check.ok ? null : check.reason } });
+    outbound = await prisma.outboundMessage.create({ data: { pageId: input.pageId, conversationId: input.conversationId, outboundAttemptKey: input.outboundAttemptKey, payload, status: paused || !check.ok || configInvalid ? "FAILED_PERMANENT" : "PENDING", lastError: blockedReason } });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") return prisma.outboundMessage.findUniqueOrThrow({ where: { outboundAttemptKey: input.outboundAttemptKey } });
     throw error;

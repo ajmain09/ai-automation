@@ -22,5 +22,11 @@ COPY --from=build /app/.next ./.next
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/package*.json ./
 COPY --from=build /app/prisma ./prisma
+COPY --from=build /app/lib ./lib
+COPY --from=build /app/services ./services
+COPY --from=build /app/worker ./worker
+COPY --from=build /app/tsconfig.json ./tsconfig.json
+COPY --from=build /app/docker ./docker
+RUN chmod +x /app/docker/app-entrypoint.sh
 EXPOSE 3000
 CMD ["npm", "run", "start"]

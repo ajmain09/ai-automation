@@ -1,9 +1,9 @@
-import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { decryptCredential, encryptCredential } from "@/lib/encryption/service";
 import { classifyFailure, withProviderCircuit } from "@/services/resilience/retry";
 
 export type TelegramDestination = { botToken: string; chatId: string };
+export type TelegramNotificationSettings = { newOrderEnabled: boolean; updatedOrderEnabled: boolean; cancelledOrderEnabled: boolean };
 export type TelegramClient = { sendMessage(destination: TelegramDestination, text: string): Promise<{ messageId?: string }> };
 
 export class TelegramBotApi implements TelegramClient {
@@ -30,35 +30,29 @@ function formatVariant(value: unknown) {
 }
 
 export async function getTelegramDestination(pageId: string): Promise<TelegramDestination | null> {
-  const page = await prisma.page.findUnique({ where: { id: pageId }, select: { id: true, settings: true } });
+  const page = await prisma.page.findUnique({ where: { id: pageId }, select: { id: true, telegramSettings: true } });
   if (!page) throw new Error("Page not found");
-  if (page.settings?.telegramEnabled && page.settings.encryptedTelegramBotToken && page.settings.telegramChatId) return { botToken: decryptCredential(page.settings.encryptedTelegramBotToken), chatId: page.settings.telegramChatId };
-  const global = await prisma.systemSetting.findUnique({ where: { key: "telegram_global_destination" } });
-  if (!global || typeof global.value !== "object" || global.value === null) return null;
-  const value = global.value as { encryptedBotToken?: unknown; chatId?: unknown };
-  if (typeof value.encryptedBotToken !== "string" || typeof value.chatId !== "string") return null;
-  return { botToken: decryptCredential(value.encryptedBotToken), chatId: value.chatId };
+  const settings = page.telegramSettings;
+  if (!settings?.encryptedBotToken || !settings.chatId || settings.status !== "CONNECTED") return null;
+  return { botToken: decryptCredential(settings.encryptedBotToken), chatId: settings.chatId };
 }
 
-export async function setPageTelegramDestination(input: { pageId: string; botToken: string; chatId: string; enabled: boolean }, adminId: string) {
+export async function getPageTelegramSettings(pageId: string) {
+  const settings = await prisma.pageTelegramSettings.findUnique({ where: { pageId }, select: { pageId: true, chatId: true, newOrderEnabled: true, updatedOrderEnabled: true, cancelledOrderEnabled: true, status: true, lastError: true, lastTestAt: true, encryptedBotToken: true } });
+  if (!settings) return null;
+  return { ...settings, encryptedBotToken: undefined, tokenConfigured: Boolean(settings.encryptedBotToken) };
+}
+
+export async function setPageTelegramDestination(input: { pageId: string; botToken?: string; chatId: string; newOrderEnabled: boolean; updatedOrderEnabled: boolean; cancelledOrderEnabled: boolean }, adminId: string) {
   const result = await prisma.$transaction(async (tx) => {
-    const settings = await tx.pageSettings.upsert({ where: { pageId: input.pageId }, update: { encryptedTelegramBotToken: encryptCredential(input.botToken), telegramChatId: input.chatId, telegramEnabled: input.enabled }, create: { pageId: input.pageId, requiredOrderFields: ["name", "phone", "address", "product", "variant", "quantity"], encryptedTelegramBotToken: encryptCredential(input.botToken), telegramChatId: input.chatId, telegramEnabled: input.enabled } });
+    const existing = await tx.pageTelegramSettings.findUnique({ where: { pageId: input.pageId }, select: { encryptedBotToken: true } });
+    const encryptedBotToken = input.botToken?.trim() ? encryptCredential(input.botToken) : existing?.encryptedBotToken ?? null;
+    const status = encryptedBotToken && input.chatId.trim() ? "CONNECTED" : "NOT_CONFIGURED";
+    const settings = await tx.pageTelegramSettings.upsert({ where: { pageId: input.pageId }, update: { encryptedBotToken, chatId: input.chatId.trim(), newOrderEnabled: input.newOrderEnabled, updatedOrderEnabled: input.updatedOrderEnabled, cancelledOrderEnabled: input.cancelledOrderEnabled, status, lastError: null }, create: { pageId: input.pageId, encryptedBotToken, chatId: input.chatId.trim(), newOrderEnabled: input.newOrderEnabled, updatedOrderEnabled: input.updatedOrderEnabled, cancelledOrderEnabled: input.cancelledOrderEnabled, status } });
     await tx.auditLog.create({ data: { adminId, pageId: input.pageId, action: "telegram.configuration_changed" } });
     return settings;
   });
   return result;
 }
 
-export async function setGlobalTelegramDestination(input: { botToken: string; chatId: string }, adminId: string) {
-  return prisma.$transaction(async (tx) => {
-    const setting = await tx.systemSetting.upsert({ where: { key: "telegram_global_destination" }, update: { value: telegramConfigJson({ botToken: input.botToken, chatId: input.chatId }) }, create: { key: "telegram_global_destination", value: telegramConfigJson({ botToken: input.botToken, chatId: input.chatId }) } });
-    await tx.auditLog.create({ data: { adminId, action: "telegram.global_configuration_changed" } });
-    return setting;
-  });
-}
-
 export function classifyTelegramFailure(error: unknown) { return classifyFailure(error); }
-
-export function telegramConfigJson(input: TelegramDestination) {
-  return { encryptedBotToken: encryptCredential(input.botToken), chatId: input.chatId } as Prisma.InputJsonValue;
-}

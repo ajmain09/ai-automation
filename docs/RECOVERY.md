@@ -8,9 +8,9 @@ Issue a short-lived, single-use recovery token through the one-admin operator fl
 
 ## PostgreSQL backups
 
-Use `scripts/backup-postgres.ps1` with `pg_dump`, encrypted storage, and a protected backup directory. Keep seven daily backups and four weekly backups. Keep backups outside the application container and test retention separately from application deployment.
+Use `scripts/backup-postgres.sh` on the Linux VPS with `pg_dump`, encrypted storage, and a protected backup directory. The PowerShell equivalent remains available for operator workstations. Keep seven daily backups and four weekly backups. Keep backups outside the application container and test retention separately from application deployment.
 
-Restore with `scripts/restore-postgres.ps1` only during an approved maintenance window. Stop app/worker writes, restore, run `prisma migrate deploy` if required, restart services, and verify Page isolation, login, configuration lifecycle, order snapshots, outbox state, and AI usage.
+Restore with `scripts/restore-postgres.sh <backup> --confirm-restore` only during an approved maintenance window. Stop app/worker writes, restore, run `prisma migrate deploy`, restart services, and verify Page isolation, login, configuration lifecycle, order snapshots, outbox state, and AI usage.
 
 Actual PostgreSQL restore smoke testing is DEFERRED TO VPS; it is not claimed as locally tested.
 

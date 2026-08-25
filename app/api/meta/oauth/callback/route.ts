@@ -2,8 +2,10 @@ import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/auth/session";
 import { consumeOAuthState, exchangeCode } from "@/services/meta/service";
 import { encryptCredential } from "@/lib/encryption/service";
+import { isDevPreview } from "@/lib/env";
 
 export async function GET(request: Request) {
+  if (isDevPreview()) return NextResponse.redirect(new URL("/pages/new?preview=connected", request.url));
   await requireAdmin();
   const url = new URL(request.url);
   const state = url.searchParams.get("state");

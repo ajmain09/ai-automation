@@ -3,9 +3,12 @@ import { z } from "zod";
 import { requireAdmin } from "@/lib/auth/session";
 import { isSameOrigin } from "@/lib/auth/csrf";
 import { isDevPreview } from "@/lib/env";
-import { getPreviewAiSettings, getPreviewPage, updatePreviewAiSettings } from "@/services/preview/store";
+import { getPreviewAiSettings, getPreviewPage, refreshPreviewPageBalance, testPreviewAiCredential, updatePreviewAiSettings } from "@/services/preview/store";
+import { prisma } from "@/lib/db/prisma";
+import { encryptCredential } from "@/lib/encryption/service";
 
 const settingsSchema = z.object({
+  action: z.enum(["save", "testCredential", "refreshBalance"]).default("save"),
   language: z.enum(["auto", "bangla", "banglish", "english"]).optional(),
   tone: z.enum(["natural_sales", "friendly", "formal", "concise"]).optional(),
   replyLength: z.enum(["short", "medium"]).optional(),
@@ -25,23 +28,35 @@ const settingsSchema = z.object({
   modelOverride: z.enum(["master", "deepseek-v4-flash", "deepseek-v4-pro"]).optional(),
   thinking: z.enum(["master", "off", "on"]).optional(),
   maxOutputTokens: z.number().int().min(100).max(8000).optional(),
+  apiKey: z.string().trim().max(500).optional(),
 });
 
 export async function GET(_request: Request, { params }: { params: Promise<{ pageId: string }> }) {
   await requireAdmin();
   const { pageId } = await params;
-  if (!isDevPreview()) return NextResponse.json({ error: "AI settings are not available in this local build." }, { status: 404 });
-  if (!getPreviewPage(pageId)) return NextResponse.json({ error: "Page not found." }, { status: 404 });
-  return NextResponse.json({ settings: getPreviewAiSettings(pageId) });
+  if (isDevPreview()) { if (!getPreviewPage(pageId)) return NextResponse.json({ error: "Page not found." }, { status: 404 }); return NextResponse.json({ settings: getPreviewAiSettings(pageId) }); }
+  const page = await prisma.page.findFirst({ where: { OR: [{ id: pageId }, { slug: pageId }] }, include: { aiSettings: true } });
+  if (!page) return NextResponse.json({ error: "Page not found." }, { status: 404 });
+  const settings = page.aiSettings;
+  return NextResponse.json({ settings: { ...(settings ?? {}), apiKey: undefined, apiKeyConfigured: Boolean(settings?.encryptedApiKey), accountLabel: "Page DeepSeek account", providerBalanceUsd: settings?.providerBalanceUsd ? Number(settings.providerBalanceUsd) : null, providerBalanceCny: settings?.providerBalanceCny ? Number(settings.providerBalanceCny) : null, lastBalanceAt: settings?.lastBalanceCheckAt ?? null, modelOverride: settings?.model ?? "deepseek-v4-flash", thinking: settings?.thinkingOverride ?? "off", manualActivityCooldownSeconds: settings?.manualActivityCooldown ?? 30, maxProductsPerRecommendation: 1, avoidRepeatedQuestions: true, staleReplyProtection: true, sequentialProcessing: true } });
 }
 
 export async function POST(request: Request, { params }: { params: Promise<{ pageId: string }> }) {
   if (!isSameOrigin(request)) return NextResponse.json({ error: "Cross-site request rejected." }, { status: 403 });
-  await requireAdmin();
+  const admin = await requireAdmin();
   const { pageId } = await params;
-  if (!isDevPreview()) return NextResponse.json({ error: "AI settings persistence requires the configured database runtime." }, { status: 501 });
-  if (!getPreviewPage(pageId)) return NextResponse.json({ error: "Page not found." }, { status: 404 });
   const parsed = settingsSchema.safeParse(await request.json());
   if (!parsed.success) return NextResponse.json({ error: "Check the AI settings and try again." }, { status: 400 });
-  return NextResponse.json({ ok: true, settings: updatePreviewAiSettings(pageId, parsed.data) });
+  if (isDevPreview()) { if (!getPreviewPage(pageId)) return NextResponse.json({ error: "Page not found." }, { status: 404 }); if (parsed.data.action === "refreshBalance") return NextResponse.json({ ok: true, settings: refreshPreviewPageBalance(pageId) }); if (parsed.data.action === "testCredential") { const result = testPreviewAiCredential(pageId, parsed.data.apiKey); return result.ok ? NextResponse.json({ ok: true, settings: result.settings }) : NextResponse.json({ error: result.error }, { status: 422 }); } return NextResponse.json({ ok: true, settings: updatePreviewAiSettings(pageId, parsed.data) }); }
+  if (parsed.data.action === "refreshBalance") return NextResponse.json({ error: "Provider balance checks are deferred until the live provider connector is enabled." }, { status: 501 });
+  const page = await prisma.page.findFirst({ where: { OR: [{ id: pageId }, { slug: pageId }] }, select: { id: true } });
+  if (!page) return NextResponse.json({ error: "Page not found." }, { status: 404 });
+  const { action, apiKey, modelOverride, thinking, manualActivityCooldownSeconds, maxProductsPerRecommendation: _maxProducts, ...rest } = parsed.data;
+  void action; void _maxProducts;
+  const settings = await prisma.$transaction(async (tx) => {
+    const value = await tx.pageAiSettings.upsert({ where: { pageId: page.id }, update: { ...rest, ...(apiKey?.trim() ? { encryptedApiKey: encryptCredential(apiKey) } : {}), ...(modelOverride && modelOverride !== "master" ? { model: modelOverride } : {}), ...(thinking && thinking !== "master" ? { thinkingOverride: thinking } : {}), ...(manualActivityCooldownSeconds !== undefined ? { manualActivityCooldown: manualActivityCooldownSeconds } : {}) }, create: { pageId: page.id, ...rest, ...(apiKey?.trim() ? { encryptedApiKey: encryptCredential(apiKey) } : {}), ...(modelOverride && modelOverride !== "master" ? { model: modelOverride } : {}), ...(thinking && thinking !== "master" ? { thinkingOverride: thinking } : {}), ...(manualActivityCooldownSeconds !== undefined ? { manualActivityCooldown: manualActivityCooldownSeconds } : {}), status: apiKey?.trim() ? "CONNECTED" : "NOT_CONFIGURED" } });
+    await tx.auditLog.create({ data: { adminId: admin.id, pageId: page.id, action: "ai.page_configuration_changed" } });
+    return value;
+  });
+  return NextResponse.json({ ok: true, settings: { ...settings, encryptedApiKey: undefined, apiKeyConfigured: Boolean(settings.encryptedApiKey), modelOverride: settings.model, thinking: settings.thinkingOverride ?? "off" } });
 }

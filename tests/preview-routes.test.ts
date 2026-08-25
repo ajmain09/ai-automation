@@ -59,4 +59,18 @@ describe("database-free preview routes", () => {
     expect(readiness.checks.length).toBeGreaterThan(0);
     expect(products[0]?.name).toBe("Herbal Hair Repair Oil");
   });
+
+  it("uses stable canonical slugs and keeps new preview Pages isolated", async () => {
+    const { createPreviewPage, getPreviewPage, getPreviewUsage, getPreviewOrders, copyPreviewSettings, getPreviewPageBudget } = await import("@/services/preview/store");
+    const page = getPreviewPage("karseell-bangladesh");
+    expect(page?.slug).toBe("karseell-bangladesh");
+    expect(getPreviewPage("11111111-1111-4111-8111-111111111111")?.slug).toBe("karseell-bangladesh");
+    expect(["/dashboard", "/pages", "/pages/new", "/pages/karseell-bangladesh", "/pages/karseell-bangladesh/business", "/pages/karseell-bangladesh/products", "/pages/karseell-bangladesh/ai", "/pages/karseell-bangladesh/telegram", "/pages/karseell-bangladesh/conversations", "/pages/karseell-bangladesh/customers", "/pages/karseell-bangladesh/orders", "/pages/karseell-bangladesh/usage", "/pages/karseell-bangladesh/settings", "/orders", "/issues", "/settings", "/settings/general", "/settings/meta", "/settings/security", "/settings/health"]).toHaveLength(20);
+    const newPage = createPreviewPage("Independent Preview Page");
+    expect(getPreviewUsage(newPage.id).month.calls).toBe(0);
+    expect(getPreviewOrders(newPage.id)).toHaveLength(0);
+    const copied = copyPreviewSettings("11111111-1111-4111-8111-111111111112", newPage.id);
+    expect(copied.fields).toContain("AI behavior");
+    expect(getPreviewPageBudget(newPage.id).warningThreshold).toBe(85);
+  });
 });

@@ -73,6 +73,20 @@ enum DeliveryStatus {
   DEAD_LETTER
 }
 
+enum MemoryFactStatus {
+  ACTIVE
+  SUPERSEDED
+  REJECTED
+  UNCONFIRMED
+}
+
+enum BudgetReservationStatus {
+  RESERVED
+  SETTLED
+  RELEASED
+  EXPIRED
+}
+
 model Admin {
   id             String               @id @default(uuid()) @db.Uuid
   email          String               @unique
@@ -104,6 +118,7 @@ model Page {
   slug                  String                 @unique
   isActive              Boolean                @default(true)
   aiEnabled             Boolean                @default(false)
+  aiStatus              String                 @default("PAUSED")
   connectionStatus      ConnectionStatus       @default(DISCONNECTED)
   lifecycleStatus       String                 @default("DRAFT")
   readinessCheckedAt    DateTime?
@@ -116,6 +131,7 @@ model Page {
   knowledgeItems        KnowledgeItem[]
   products              Product[]
   customers             Customer[]
+  memoryFacts           CustomerMemoryFact[]
   conversations         Conversation[]
   messages              Message[]
   webhookEvents         WebhookEvent[]
@@ -128,8 +144,11 @@ model Page {
   apiUsage              ApiUsage[]
   issues                Issue[]
   auditLogs             AuditLog[]
+  dataDeletionRequests  DataDeletionRequest[]
   aiSettings            PageAiSettings?
-  aiBudget              PageAiBudget?
+  telegramSettings      PageTelegramSettings?
+  costSettings          PageCostSettings?
+  budgetReservations    AiBudgetReservation[]
 }
 
 model PageConnection {
@@ -149,61 +168,101 @@ model PageConnection {
 }
 
 model PageSettings {
-  id                        String   @id @default(uuid()) @db.Uuid
-  pageId                    String   @unique @db.Uuid
-  currency                  String   @default("USD")
-  countryCode               String   @default("US")
-  defaultLanguage           String   @default("en")
-  tone                      String   @default("helpful")
-  requiredOrderFields       Json
-  globalAiPaused            Boolean  @default(false)
-  telegramEnabled           Boolean  @default(false)
-  encryptedTelegramBotToken String?
-  telegramChatId            String?
-  createdAt                 DateTime @default(now())
-  updatedAt                 DateTime @updatedAt
-  page                      Page     @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  id                  String   @id @default(uuid()) @db.Uuid
+  pageId              String   @unique @db.Uuid
+  currency            String   @default("USD")
+  countryCode         String   @default("US")
+  defaultLanguage     String   @default("en")
+  tone                String   @default("helpful")
+  requiredOrderFields Json
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  page                Page     @relation(fields: [pageId], references: [id], onDelete: Cascade)
 }
 
 model PageAiSettings {
-  id                           String   @id @default(uuid()) @db.Uuid
-  pageId                       String   @unique @db.Uuid
-  language                     String   @default("auto")
-  tone                         String   @default("natural_sales")
-  replyLength                 String   @default("short")
-  modelOverride               String?
-  thinkingOverride            String?
-  maxOutputTokens             Int?
-  understandBeforeRecommend   Boolean  @default(true)
-  suggestCombo                Boolean  @default(true)
-  askOneQuestionAtATime       Boolean  @default(true)
-  mirrorCustomerLanguage      Boolean  @default(true)
-  customerMemory              Boolean  @default(true)
-  recentMessageContext        Int      @default(12)
-  rollingSummary              Boolean  @default(true)
-  smartBuffer                 Boolean  @default(true)
-  bufferWindowSeconds         Int      @default(8)
-  manualCollisionProtection   Boolean  @default(true)
-  manualActivityCooldown      Int      @default(30)
-  customSalesInstructions     String?
-  page                       Page     @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  id                        String    @id @default(uuid()) @db.Uuid
+  pageId                    String    @unique @db.Uuid
+  language                  String    @default("auto")
+  tone                      String    @default("natural_sales")
+  replyLength               String    @default("short")
+  provider                  String    @default("deepseek")
+  encryptedApiKey           String?
+  baseUrl                   String    @default("https://api.deepseek.com")
+  model                     String    @default("deepseek-v4-flash")
+  thinkingOverride          String?
+  maxOutputTokens           Int?
+  understandBeforeRecommend Boolean   @default(true)
+  suggestCombo              Boolean   @default(true)
+  askOneQuestionAtATime     Boolean   @default(true)
+  mirrorCustomerLanguage    Boolean   @default(true)
+  customerMemory            Boolean   @default(true)
+  recentMessageContext      Int       @default(12)
+  rollingSummary            Boolean   @default(true)
+  smartBuffer               Boolean   @default(true)
+  bufferWindowSeconds       Int       @default(8)
+  manualCollisionProtection Boolean   @default(true)
+  manualActivityCooldown    Int       @default(30)
+  customSalesInstructions   String?
+  status                    String    @default("NOT_CONFIGURED")
+  providerBalanceUsd        Decimal?  @db.Decimal(14, 8)
+  providerBalanceCny        Decimal?  @db.Decimal(14, 8)
+  providerBalancePayload    Json?
+  lastBalanceCheckAt        DateTime?
+  lastSuccessfulCallAt      DateTime?
+  lastFailedCallAt          DateTime?
+  lastError                 String?
+  updatedAt                 DateTime  @updatedAt
+  createdAt                 DateTime  @default(now())
+  page                      Page      @relation(fields: [pageId], references: [id], onDelete: Cascade)
 }
 
-model PageAiBudget {
-  id                  String   @id @default(uuid()) @db.Uuid
-  pageId              String   @unique @db.Uuid
-  useMasterSettings   Boolean  @default(true)
-  monthlyBudgetBdt    Decimal? @db.Decimal(14, 2)
-  dailyBudgetBdt      Decimal? @db.Decimal(14, 2)
-  hardLimit           Boolean  @default(false)
-  warningThreshold    Int      @default(85)
-  maxOutputTokens     Int?
-  modelOverride       String?
-  pausedByBudget      Boolean  @default(false)
-  reservedBdt         Decimal  @default(0) @db.Decimal(14, 6)
-  updatedAt           DateTime @updatedAt
-  createdAt           DateTime @default(now())
-  page                Page     @relation(fields: [pageId], references: [id], onDelete: Cascade)
+model PageTelegramSettings {
+  id                    String    @id @default(uuid()) @db.Uuid
+  pageId                String    @unique @db.Uuid
+  encryptedBotToken     String?
+  chatId                String?
+  newOrderEnabled       Boolean   @default(true)
+  updatedOrderEnabled   Boolean   @default(true)
+  cancelledOrderEnabled Boolean   @default(true)
+  status                String    @default("NOT_CONFIGURED")
+  lastError             String?
+  lastTestAt            DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+  page                  Page      @relation(fields: [pageId], references: [id], onDelete: Cascade)
+}
+
+model PageCostSettings {
+  id               String                 @id @default(uuid()) @db.Uuid
+  pageId           String                 @unique @db.Uuid
+  usdBdtRate       Decimal                @default(120) @db.Decimal(14, 6)
+  monthlyBudgetBdt Decimal?               @db.Decimal(14, 2)
+  dailyBudgetBdt   Decimal?               @db.Decimal(14, 2)
+  hardLimit        Boolean                @default(false)
+  warningThreshold Int                    @default(85)
+  pausedByBudget   Boolean                @default(false)
+  reservedBdt      Decimal                @default(0) @db.Decimal(14, 6)
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
+  page             Page                   @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  pricingProfiles  PageAiPricingProfile[]
+}
+
+model AiBudgetReservation {
+  id             String                  @id @default(uuid()) @db.Uuid
+  pageId         String                  @db.Uuid
+  reservationKey String                  @unique
+  aiAttemptId    String?                 @unique
+  estimatedBdt   Decimal                 @db.Decimal(14, 6)
+  settledBdt     Decimal?                @db.Decimal(14, 6)
+  status         BudgetReservationStatus @default(RESERVED)
+  expiresAt      DateTime
+  createdAt      DateTime                @default(now())
+  updatedAt      DateTime                @updatedAt
+  page           Page                    @relation(fields: [pageId], references: [id], onDelete: Cascade)
+
+  @@index([pageId, status, expiresAt])
 }
 
 model ConfigurationVersion {
@@ -292,17 +351,18 @@ model ProductVariant {
 }
 
 model Customer {
-  id            String          @id @default(uuid()) @db.Uuid
-  pageId        String          @db.Uuid
+  id            String               @id @default(uuid()) @db.Uuid
+  pageId        String               @db.Uuid
   facebookPsid  String
   name          String?
   phone         String?
   phoneOriginal String?
   address       String?
-  createdAt     DateTime        @default(now())
-  updatedAt     DateTime        @updatedAt
-  page          Page            @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+  page          Page                 @relation(fields: [pageId], references: [id], onDelete: Cascade)
   memory        CustomerMemory?
+  memoryFacts   CustomerMemoryFact[]
   conversations Conversation[]
   orders        Order[]
 
@@ -311,11 +371,48 @@ model Customer {
 }
 
 model CustomerMemory {
-  id         String   @id @default(uuid()) @db.Uuid
-  customerId String   @unique @db.Uuid
-  memory     Json
-  updatedAt  DateTime @updatedAt
-  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  id                   String               @id @default(uuid()) @db.Uuid
+  customerId           String               @unique @db.Uuid
+  memory               Json
+  version              Int                  @default(0)
+  summaryVersion       Int                  @default(0)
+  summaryLastMessageId String?              @db.Uuid
+  summaryGeneratedAt   DateTime?
+  summaryStale         Boolean              @default(false)
+  updatedAt            DateTime             @updatedAt
+  customer             Customer             @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  facts                CustomerMemoryFact[]
+
+  @@index([customerId, version])
+}
+
+model CustomerMemoryFact {
+  id                 String               @id @default(uuid()) @db.Uuid
+  pageId             String               @db.Uuid
+  customerId         String               @db.Uuid
+  factKey            String
+  normalizedValue    Json
+  displayValue       String?
+  sourceMessageId    String?              @db.Uuid
+  sourceType         String               @default("AI_EXTRACTION")
+  confidence         Decimal?             @db.Decimal(5, 4)
+  status             MemoryFactStatus     @default(ACTIVE)
+  firstSeenAt        DateTime             @default(now())
+  lastConfirmedAt    DateTime?
+  updatedAt          DateTime             @updatedAt
+  supersededByFactId String?              @db.Uuid
+  expiresAt          DateTime?
+  page               Page                 @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  customer           Customer             @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  sourceMessage      Message?             @relation(fields: [sourceMessageId], references: [id], onDelete: SetNull)
+  supersededBy       CustomerMemoryFact?  @relation("MemoryFactSupersession", fields: [supersededByFactId], references: [id], onDelete: SetNull)
+  supersedes         CustomerMemoryFact[] @relation("MemoryFactSupersession")
+  customerMemory     CustomerMemory?      @relation(fields: [customerMemoryId], references: [id])
+  customerMemoryId   String?              @db.Uuid
+
+  @@unique([customerId, sourceMessageId, factKey])
+  @@index([pageId, customerId, factKey, status])
+  @@index([pageId, customerId, updatedAt])
 }
 
 model Conversation {
@@ -351,18 +448,19 @@ model OAuthState {
 }
 
 model Message {
-  id             String           @id @default(uuid()) @db.Uuid
-  pageId         String           @db.Uuid
-  conversationId String           @db.Uuid
+  id             String               @id @default(uuid()) @db.Uuid
+  pageId         String               @db.Uuid
+  conversationId String               @db.Uuid
   providerId     String
   direction      MessageDirection
   text           String?
   senderPsid     String?
-  isEcho         Boolean          @default(false)
+  isEcho         Boolean              @default(false)
   metadata       Json?
-  createdAt      DateTime         @default(now())
-  page           Page             @relation(fields: [pageId], references: [id], onDelete: Cascade)
-  conversation   Conversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  createdAt      DateTime             @default(now())
+  page           Page                 @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  conversation   Conversation         @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  memoryFacts    CustomerMemoryFact[]
 
   @@unique([pageId, providerId])
   @@index([pageId, createdAt])
@@ -532,122 +630,70 @@ model AiRun {
 }
 
 model ApiUsage {
-  id                 String     @id @default(uuid()) @db.Uuid
-  pageId             String     @db.Uuid
-  aiAttemptId        String     @unique @db.Uuid
-  provider           String
-  model              String?
-  callType           AiCallType
-  inputTokens        Int        @default(0)
-  cachedInputTokens  Int?
-  outputTokens       Int        @default(0)
-  totalTokens        Int        @default(0)
-  providerUsageJson  Json?
-  inputRateSnapshot  Decimal?   @db.Decimal(12, 8)
-  inputHitRateSnapshot  Decimal? @db.Decimal(12, 8)
-  inputMissRateSnapshot Decimal? @db.Decimal(12, 8)
-  outputRateSnapshot Decimal?   @db.Decimal(12, 8)
-  usdBdtRateSnapshot Decimal?   @db.Decimal(12, 8)
-  providerRequestId  String?
-  attemptNumber      Int        @default(1)
-  status             String     @default("SUCCEEDED")
-  latencyMs          Int?
-  estimatedCost      Decimal?   @db.Decimal(12, 6)
-  estimatedCostUsd   Decimal?   @db.Decimal(14, 8)
-  estimatedCostBdt   Decimal?   @db.Decimal(14, 6)
-  costEstimated      Boolean    @default(true)
-  pricingProfileId   String?    @db.Uuid
-  createdAt          DateTime   @default(now())
-  page               Page       @relation(fields: [pageId], references: [id], onDelete: Cascade)
-  aiRun              AiRun      @relation(fields: [aiAttemptId], references: [id], onDelete: Cascade)
-  pricingProfile     AiPricingProfile? @relation(fields: [pricingProfileId], references: [id], onDelete: SetNull)
+  id                    String                @id @default(uuid()) @db.Uuid
+  pageId                String                @db.Uuid
+  aiAttemptId           String                @unique @db.Uuid
+  provider              String
+  model                 String?
+  callType              AiCallType
+  inputTokens           Int                   @default(0)
+  cachedInputTokens     Int?
+  outputTokens          Int                   @default(0)
+  totalTokens           Int                   @default(0)
+  providerUsageJson     Json?
+  inputRateSnapshot     Decimal?              @db.Decimal(12, 8)
+  inputHitRateSnapshot  Decimal?              @db.Decimal(12, 8)
+  inputMissRateSnapshot Decimal?              @db.Decimal(12, 8)
+  outputRateSnapshot    Decimal?              @db.Decimal(12, 8)
+  usdBdtRateSnapshot    Decimal?              @db.Decimal(12, 8)
+  providerRequestId     String?
+  attemptNumber         Int                   @default(1)
+  status                String                @default("SUCCEEDED")
+  latencyMs             Int?
+  estimatedCost         Decimal?              @db.Decimal(12, 6)
+  estimatedCostUsd      Decimal?              @db.Decimal(14, 8)
+  estimatedCostBdt      Decimal?              @db.Decimal(14, 6)
+  costEstimated         Boolean               @default(true)
+  pricingProfileId      String?               @db.Uuid
+  createdAt             DateTime              @default(now())
+  page                  Page                  @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  aiRun                 AiRun                 @relation(fields: [aiAttemptId], references: [id], onDelete: Cascade)
+  pricingProfile        PageAiPricingProfile? @relation(fields: [pricingProfileId], references: [id], onDelete: SetNull)
 
   @@index([pageId, createdAt])
 }
 
 model MetaPlatformSetting {
-  id                    String   @id @default(uuid()) @db.Uuid
-  appId                 String?
+  id                   String    @id @default(uuid()) @db.Uuid
+  appId                String?
   appSecretEncrypted   String?
   verifyTokenEncrypted String?
-  graphApiVersion       String   @default("v23.0")
-  oauthRedirectUri      String?
-  webhookUrl            String?
-  status                String   @default("NOT_CONFIGURED")
-  lastApiTestAt         DateTime?
-  lastError             String?
-  updatedAt             DateTime @updatedAt
-  createdAt             DateTime @default(now())
+  graphApiVersion      String    @default("v23.0")
+  oauthRedirectUri     String?
+  webhookUrl           String?
+  status               String    @default("NOT_CONFIGURED")
+  lastApiTestAt        DateTime?
+  lastError            String?
+  updatedAt            DateTime  @updatedAt
+  createdAt            DateTime  @default(now())
 }
 
-model AiProviderSetting {
-  id                    String   @id @default(uuid()) @db.Uuid
-  provider              String   @unique @default("deepseek")
-  apiKeyEncrypted       String?
-  baseUrl               String   @default("https://api.deepseek.com")
-  defaultModel          String   @default("deepseek-v4-flash")
-  thinkingMode          String   @default("off")
-  reasoningEffort       String?
-  maxOutputTokens       Int      @default(700)
-  requestTimeoutMs      Int      @default(30000)
-  retryCount            Int      @default(1)
-  concurrencyLimit      Int      @default(4)
-  status                String   @default("NOT_CONFIGURED")
-  balanceUsd            Decimal? @db.Decimal(14, 8)
-  balanceCny            Decimal? @db.Decimal(14, 8)
-  balancePayload        Json?
-  lastSuccessfulCallAt  DateTime?
-  lastFailedCallAt      DateTime?
-  lastBalanceCheckAt    DateTime?
-  lastError             String?
-  updatedAt             DateTime @updatedAt
-  createdAt             DateTime @default(now())
-}
+model PageAiPricingProfile {
+  id                          String           @id @default(uuid()) @db.Uuid
+  pageId                      String           @db.Uuid
+  model                       String
+  effectiveFrom               DateTime
+  inputCacheHitPerMillionUsd  Decimal          @db.Decimal(14, 8)
+  inputCacheMissPerMillionUsd Decimal          @db.Decimal(14, 8)
+  outputPerMillionUsd         Decimal          @db.Decimal(14, 8)
+  peakMultiplier              Decimal?         @db.Decimal(8, 4)
+  peakScheduleEnabled         Boolean          @default(false)
+  createdAt                   DateTime         @default(now())
+  usages                      ApiUsage[]
+  pageCostSettings            PageCostSettings @relation(fields: [pageId], references: [pageId], onDelete: Cascade)
 
-model TelegramSetting {
-  id                    String   @id @default(uuid()) @db.Uuid
-  botTokenEncrypted     String?
-  defaultChatId         String?
-  defaultParseMode      String?
-  status                String   @default("NOT_CONFIGURED")
-  lastError             String?
-  updatedAt             DateTime @updatedAt
-  createdAt             DateTime @default(now())
-}
-
-model FxRateSetting {
-  id             String   @id @default(uuid()) @db.Uuid
-  pair           String   @unique @default("USD_BDT")
-  rate           Decimal  @db.Decimal(14, 6)
-  source         String   @default("MANUAL")
-  updatedAt      DateTime @updatedAt
-  createdAt      DateTime @default(now())
-}
-
-model AiPricingProfile {
-  id                              String   @id @default(uuid()) @db.Uuid
-  model                           String
-  effectiveFrom                   DateTime
-  inputCacheHitPerMillionUsd      Decimal  @db.Decimal(14, 8)
-  inputCacheMissPerMillionUsd     Decimal  @db.Decimal(14, 8)
-  outputPerMillionUsd             Decimal  @db.Decimal(14, 8)
-  peakMultiplier                  Decimal? @db.Decimal(8, 4)
-  peakScheduleEnabled             Boolean  @default(false)
-  createdAt                       DateTime @default(now())
-  usages                          ApiUsage[]
-
-  @@index([model, effectiveFrom])
-}
-
-model GlobalAiBudget {
-  id               String   @id @default(uuid()) @db.Uuid
-  monthlyBudgetBdt Decimal? @db.Decimal(14, 2)
-  dailyBudgetBdt   Decimal? @db.Decimal(14, 2)
-  hardLimit        Boolean  @default(false)
-  warningThreshold Int      @default(85)
-  reservedBdt      Decimal  @default(0) @db.Decimal(14, 6)
-  updatedAt        DateTime @updatedAt
-  createdAt        DateTime @default(now())
+  @@unique([pageId, model])
+  @@index([pageId, model, effectiveFrom])
 }
 
 model Issue {
@@ -677,6 +723,19 @@ model AuditLog {
   page      Page?    @relation(fields: [pageId], references: [id], onDelete: SetNull)
 
   @@index([pageId, createdAt])
+}
+
+model DataDeletionRequest {
+  id              String    @id @default(uuid()) @db.Uuid
+  requestKey      String    @unique
+  pageId          String    @db.Uuid
+  customerId      String    @db.Uuid
+  status          String    @default("COMPLETED")
+  ordersPreserved Int       @default(0)
+  completedAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  page            Page      @relation(fields: [pageId], references: [id], onDelete: Cascade)
 }
 
 model SystemSetting {
