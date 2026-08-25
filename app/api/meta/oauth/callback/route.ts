@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/auth/session";
 import { consumeOAuthState, exchangeCode } from "@/services/meta/service";
 import { encryptCredential } from "@/lib/encryption/service";
-import { isDevPreview } from "@/lib/env";
+import { getEnv, isDevPreview } from "@/lib/env";
 
 export async function GET(request: Request) {
   if (isDevPreview()) return NextResponse.redirect(new URL("/pages/new?preview=connected", request.url));
@@ -17,7 +17,7 @@ export async function GET(request: Request) {
     const hash = (await import("node:crypto")).createHash("sha256").update(state).digest("hex");
     const { prisma } = await import("@/lib/db/prisma");
     await prisma.oAuthState.update({ where: { stateHash: hash }, data: { encryptedUserToken: encryptCredential(token.access_token) } });
-    return NextResponse.redirect(new URL(`/pages/new?meta_state=${encodeURIComponent(state)}`, url.origin));
+    return NextResponse.redirect(new URL(`/pages/new?meta_state=${encodeURIComponent(state)}`, getEnv().APP_URL));
   } catch {
     return NextResponse.json({ error: "Facebook connection could not be completed." }, { status: 400 });
   }
