@@ -1,14 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
-  connectMetaPage, decryptCredential, finalizeOAuthState, healthCheckMetaPage, missingRequiredPermissions,
+  connectMetaPage, decryptCredential, finalizeOAuthState, healthCheckMetaPage, missingBlockingPagePermissions,
   prisma, requireAdmin, resolvePageAccessToken, runPageAccessDiagnostic,
 } = vi.hoisted(() => ({
   connectMetaPage: vi.fn(),
   decryptCredential: vi.fn(() => "USER_TOKEN"),
   finalizeOAuthState: vi.fn(),
   healthCheckMetaPage: vi.fn(),
-  missingRequiredPermissions: vi.fn(() => []),
+  missingBlockingPagePermissions: vi.fn(() => []),
   prisma: {
     oAuthState: { findUnique: vi.fn() },
     page: { findUnique: vi.fn(), create: vi.fn() },
@@ -30,7 +30,7 @@ vi.mock("@/lib/encryption/service", () => ({ decryptCredential }));
 vi.mock("@/lib/db/prisma", () => ({ prisma }));
 vi.mock("@/services/issues/service", () => ({ upsertActionableIssue: vi.fn() }));
 vi.mock("@/lib/logging/logger", () => ({ logger: { warn: vi.fn(), error: vi.fn() }, redactSensitiveText: (value: string) => value }));
-vi.mock("@/services/meta/service", () => ({ connectMetaPage, finalizeOAuthState, healthCheckMetaPage, MetaApiError: MockMetaApiError, missingRequiredPermissions, resolvePageAccessToken, runPageAccessDiagnostic }));
+vi.mock("@/services/meta/service", () => ({ connectMetaPage, finalizeOAuthState, healthCheckMetaPage, MetaApiError: MockMetaApiError, missingBlockingPagePermissions, resolvePageAccessToken, runPageAccessDiagnostic }));
 
 const granted = [
   { permission: "pages_show_list", status: "granted" }, { permission: "pages_read_engagement", status: "granted" },

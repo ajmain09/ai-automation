@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/auth/session";
 import { decryptCredential } from "@/lib/encryption/service";
-import { MetaApiError, missingRequiredPermissions, pageDiscoveryStatus, REQUIRED_META_PERMISSIONS, runPageAccessDiagnostic } from "@/services/meta/service";
+import { MetaApiError, missingBlockingPagePermissions, pageDiscoveryStatus, REQUIRED_META_PERMISSIONS, runPageAccessDiagnostic } from "@/services/meta/service";
 import { prisma } from "@/lib/db/prisma";
 import { z } from "zod";
 import { isDevPreview } from "@/lib/env";
@@ -27,10 +27,15 @@ export async function GET(request: Request) {
        tokenValidity: diagnostic.checks.tokenValidity,
        tokenAppId: diagnostic.checks.tokenAppId,
        granularTargetIds: diagnostic.diagnostics.granularTargetIds,
+       granularPageTargets: diagnostic.diagnostics.granularPageTargets,
+       businessAssetTargets: diagnostic.diagnostics.businessAssetTargets,
+       unresolvedGranularTargets: diagnostic.diagnostics.unresolvedGranularTargets,
+       assignedPages: diagnostic.diagnostics.assignedPages,
        verifiedGranularPages: diagnostic.diagnostics.verifiedGranularPages,
        finalMergedPages: diagnostic.diagnostics.finalMergedPages,
+       granularTargetDiagnostics: diagnostic.diagnostics.granularTargetDiagnostics,
      } } });
-     const missing = missingRequiredPermissions(diagnostic.permissions);
+     const missing = missingBlockingPagePermissions(diagnostic.permissions);
      if (missing.length > 0) return NextResponse.json({ pages: [], permissions: diagnostic.permissions, diagnostics: diagnostic, status: "PERMISSION_MISSING", message: "Facebook permissions are required to discover manageable Pages.", state: state.data });
      const status = pageDiscoveryStatus(diagnostic);
      return NextResponse.json({ pages: result.pages.map(({ id, name }) => ({ id, name })), permissions: diagnostic.permissions, diagnostics: diagnostic, status, state: state.data, ...(status === "NO_PAGES" ? { message: "Facebook login succeeded, but Meta returned no Page identities." } : {}) });

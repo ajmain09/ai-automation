@@ -5,7 +5,9 @@ import { withProviderCircuit } from "@/services/resilience/retry";
 import { getMetaPlatformConfig, type MetaPlatformConfig } from "@/services/meta/settings";
 import { logger } from "@/lib/logging/logger";
 
-export const REQUIRED_META_PERMISSIONS = ["pages_show_list", "pages_read_engagement", "pages_manage_metadata", "pages_messaging"] as const;
+export const DIRECT_PAGE_META_PERMISSIONS = ["pages_show_list", "pages_read_engagement", "pages_manage_metadata", "pages_messaging"] as const;
+export const BUSINESS_MANAGEMENT_PERMISSION = "business_management" as const;
+export const REQUIRED_META_PERMISSIONS = [...DIRECT_PAGE_META_PERMISSIONS, BUSINESS_MANAGEMENT_PERMISSION] as const;
 export type MetaPermissionStatus = "granted" | "declined" | "expired" | "missing" | "unknown";
 export type MetaPermissionDiagnostic = { permission: string; status: MetaPermissionStatus };
 /** A discovered Page may not include an inline credential. The credential is server-only. */
@@ -19,12 +21,26 @@ export type PageDiscoveryDiagnostics = {
   displayablePageCount: number;
   rowsWithPageAccessToken: number;
   meAccountsPageCount?: number;
+  assignedPagesPageCount?: number;
   granularTargetIds?: number;
+  granularPageTargets?: number;
+  businessAssetTargets?: number;
+  unresolvedGranularTargets?: number;
+  granularTargetDiagnostics?: GranularTargetDiagnostic[];
   verifiedGranularPages?: number;
   finalMergedPages?: number;
 };
 
 export type GranularScopeDiagnostic = { scope: string; targetIds: string[] };
+export type GranularTargetVerification = "TARGET_PAGE_VERIFIED" | "TARGET_BUSINESS_ASSET" | "TARGET_UNRESOLVED";
+export type GranularTargetDiagnostic = {
+  targetId: string;
+  associatedScopes: string[];
+  verification: GranularTargetVerification;
+  metaErrorCode?: string | number;
+  metaErrorSubcode?: string | number;
+  metaErrorType?: string;
+};
 export type MetaTokenDebug = {
   isValid: boolean;
   appId: string | null;
@@ -59,6 +75,7 @@ export type PageAccessDiagnostic = {
     pages_read_engagement: MetaDiagnosticCheck;
     pages_manage_metadata: MetaDiagnosticCheck;
     pages_messaging: MetaDiagnosticCheck;
+    business_management: MetaDiagnosticCheck;
     loginConfiguration: MetaDiagnosticCheck;
     manageablePages: MetaDiagnosticCheck;
   };
@@ -66,6 +83,11 @@ export type PageAccessDiagnostic = {
   diagnostics: {
     directManageablePages: number;
     granularTargetIds: number;
+    granularPageTargets: number;
+    businessAssetTargets: number;
+    unresolvedGranularTargets: number;
+    assignedPages: number;
+    granularTargetDiagnostics: GranularTargetDiagnostic[];
     verifiedGranularPages: number;
     finalMergedPages: number;
     granularAssetsAuthorized?: boolean;
@@ -238,9 +260,27 @@ export function missingRequiredPermissions(permissions: MetaPermissionDiagnostic
   return permissions.filter((item) => item.status !== "granted");
 }
 
+/** Permissions required for the normal Page connection flow. Business access
+ * is diagnosed separately because Meta can return directly-owned Pages without
+ * business_management. */
+export function missingBlockingPagePermissions(permissions: MetaPermissionDiagnostic[]) {
+  return permissions.filter((item) => item.status !== "granted" && item.permission !== BUSINESS_MANAGEMENT_PERMISSION);
+}
+
 type GraphPage = { id?: string; name?: string; access_token?: string; tasks?: unknown };
 type PageDiscoveryResponse = { data?: GraphPage[]; paging?: { next?: string } };
 type GranularPageResponse = GraphPage;
+type GraphUser = { id?: string; name?: string };
+type GraphBusiness = { id?: string; name?: string };
+type GraphAsset = GraphPage;
+
+type PageDiscoveryResult = {
+  pages: MetaPage[];
+  diagnostics: PageDiscoveryDiagnostics;
+  errors: PageAccessDiagnostic["errors"];
+  businessAccessDetected: BusinessAccessState;
+  businessAssetsReturned: number | null;
+};
 
 function normalizePage(row: GraphPage): MetaPage | null {
   if (typeof row.id !== "string" || !row.id.trim() || typeof row.name !== "string" || !row.name.trim()) return null;
@@ -265,7 +305,22 @@ function nextMetaPageUrl(next: string | undefined, userAccessToken: string) {
   }
 }
 
-async function discoverPageRows(userAccessToken: string, tokenDebug: MetaTokenDebug): Promise<{ pages: MetaPage[]; diagnostics: PageDiscoveryDiagnostics }> {
+function mergePage(pagesById: Map<string, MetaPage>, page: MetaPage) {
+  const current = pagesById.get(page.id);
+  if (!current) return pagesById.set(page.id, page);
+  pagesById.set(page.id, {
+    ...current,
+    ...(current.access_token || !page.access_token ? {} : { access_token: page.access_token }),
+    ...(current.tasks?.length || !page.tasks ? {} : { tasks: page.tasks }),
+  });
+}
+
+function safeMetaError(error: unknown) {
+  if (error instanceof MetaApiError) return { code: error.details.code, subcode: error.details.subcode, type: error.details.type };
+  return {};
+}
+
+async function discoverPageRows(userAccessToken: string, tokenDebug: MetaTokenDebug, permissions: MetaPermissionDiagnostic[] = []): Promise<PageDiscoveryResult> {
   const config = await metaConfig();
   const url = new URL(`https://graph.facebook.com/${config.version}/me/accounts`);
   url.searchParams.set("fields", "id,name,tasks,access_token");
@@ -295,12 +350,71 @@ async function discoverPageRows(userAccessToken: string, tokenDebug: MetaTokenDe
 
   const validRows = rows.map(normalizePage).filter((page): page is MetaPage => page !== null);
   const pagesById = new Map<string, MetaPage>();
-  for (const page of validRows) {
-    const current = pagesById.get(page.id);
-    if (!current || (!current.access_token && page.access_token)) pagesById.set(page.id, page);
+  for (const page of validRows) mergePage(pagesById, page);
+
+  const targetScopes = new Map<string, Set<string>>();
+  for (const granularScope of tokenDebug.granularScopes) {
+    for (const targetId of granularScope.targetIds) {
+      const scopes = targetScopes.get(targetId) ?? new Set<string>();
+      scopes.add(granularScope.scope);
+      targetScopes.set(targetId, scopes);
+    }
   }
-  const pages = [...pagesById.values()];
-  const granularTargetIds = [...new Set(tokenDebug.granularScopes.flatMap((scope) => scope.targetIds))];
+  const granularTargetIds = [...targetScopes.keys()];
+  const targetDiagnostics = new Map<string, GranularTargetDiagnostic>();
+  const errors: PageAccessDiagnostic["errors"] = [];
+  const setTargetDiagnostic = (targetId: string, verification: GranularTargetVerification, error?: unknown) => {
+    const metaError = safeMetaError(error);
+    targetDiagnostics.set(targetId, {
+      targetId,
+      associatedScopes: [...(targetScopes.get(targetId) ?? [])],
+      verification,
+      ...(metaError.code !== undefined ? { metaErrorCode: metaError.code } : {}),
+      ...(metaError.subcode !== undefined ? { metaErrorSubcode: metaError.subcode } : {}),
+      ...(metaError.type !== undefined ? { metaErrorType: metaError.type } : {}),
+    });
+  };
+
+  let assignedPagesPageCount = 0;
+  const assignedPageIds = new Set<string>();
+  // Login for Business can authorize a user for Pages without exposing them
+  // through /me/accounts. This endpoint is a fallback and never makes direct
+  // Page discovery fail when Meta does not support it for the token.
+  if (rows.length === 0 || granularTargetIds.length > 0) {
+    try {
+      const assignedUrl = new URL(`https://graph.facebook.com/${config.version}/me/assigned_pages`);
+      assignedUrl.searchParams.set("fields", "id,name,tasks,access_token");
+      assignedUrl.searchParams.set("access_token", userAccessToken);
+      let assigned: { body: PageDiscoveryResponse; httpStatus: number };
+      try {
+        assigned = await metaJsonWithStatus<PageDiscoveryResponse>(assignedUrl, "pages.assigned_pages");
+      } catch (firstError) {
+        // Some Meta configurations expose the edge but reject access_token as
+        // a requested field. Retry with identity/task fields only; credentials
+        // are resolved later through the server-side Page credential flow.
+        const safeAssignedUrl = new URL(assignedUrl);
+        safeAssignedUrl.searchParams.set("fields", "id,name,tasks");
+        try {
+          assigned = await metaJsonWithStatus<PageDiscoveryResponse>(safeAssignedUrl, "pages.assigned_pages.identity");
+        } catch (secondError) {
+          errors.push(diagnosticError(firstError));
+          throw secondError;
+        }
+      }
+      const assignedRows = Array.isArray(assigned.body.data) ? assigned.body.data : [];
+      const assignedPages = assignedRows.map(normalizePage).filter((page): page is MetaPage => page !== null);
+      assignedPagesPageCount = assignedPages.length;
+      for (const page of assignedPages) {
+        assignedPageIds.add(page.id);
+        mergePage(pagesById, page);
+      }
+      logger.info({ operation: "pages.assigned_pages", httpStatus: assigned.httpStatus, dataRows: assignedRows.length, validPageIdentities: assignedPages.length, rowsWithPageAccessToken: assignedRows.filter((row) => typeof row.access_token === "string" && row.access_token.length > 0).length }, "Meta assigned Page discovery response");
+    } catch (error) {
+      errors.push(diagnosticError(error));
+      logger.warn({ operation: "pages.assigned_pages", ...safeMetaError(error) }, "Meta assigned Page discovery failed");
+    }
+  }
+
   let verifiedGranularPages = 0;
   for (const targetId of granularTargetIds) {
     try {
@@ -308,28 +422,92 @@ async function discoverPageRows(userAccessToken: string, tokenDebug: MetaTokenDe
       verificationUrl.searchParams.set("fields", "id,name,tasks,access_token");
       verificationUrl.searchParams.set("access_token", userAccessToken);
       const verified = normalizePage(await metaJson<GranularPageResponse>(verificationUrl, "pages.granular.verify"));
-      if (!verified) continue;
+      if (!verified) {
+        const matchedAssignedPage = assignedPageIds.has(targetId);
+        if (matchedAssignedPage) verifiedGranularPages += 1;
+        setTargetDiagnostic(targetId, matchedAssignedPage ? "TARGET_PAGE_VERIFIED" : "TARGET_UNRESOLVED");
+        if (!matchedAssignedPage) logger.warn({ targetId, associatedScopes: [...(targetScopes.get(targetId) ?? [])], verification: "TARGET_UNRESOLVED" }, "Meta granular target did not resolve to a Page identity");
+        continue;
+      }
       verifiedGranularPages += 1;
-      const current = pagesById.get(verified.id);
-      if (!current || (!current.access_token && verified.access_token)) pagesById.set(verified.id, verified);
+      setTargetDiagnostic(targetId, "TARGET_PAGE_VERIFIED");
+      mergePage(pagesById, verified);
     } catch (error) {
       const details = error instanceof MetaApiError ? error.details : { operation: "pages.granular.verify" };
-      logger.warn({ operation: details.operation, metaPageId: targetId, metaErrorCode: details.code, metaErrorType: details.type, metaErrorSubcode: details.subcode }, "Meta granular Page verification failed");
+      const matchedAssignedPage = assignedPageIds.has(targetId);
+      if (matchedAssignedPage) verifiedGranularPages += 1;
+      setTargetDiagnostic(targetId, matchedAssignedPage ? "TARGET_PAGE_VERIFIED" : "TARGET_UNRESOLVED", error);
+      logger.warn({ targetId, associatedScopes: [...(targetScopes.get(targetId) ?? [])], verification: matchedAssignedPage ? "TARGET_PAGE_VERIFIED" : "TARGET_UNRESOLVED", operation: details.operation, metaErrorCode: details.code, metaErrorType: details.type, metaErrorSubcode: details.subcode }, "Meta granular target verification failed");
     }
   }
+
+  let businessAccessDetected: BusinessAccessState = "unknown";
+  let businessAssetsReturned: number | null = null;
+  const businessAssetIds = new Set<string>();
+  const businessManagementGranted = permissions.find((permission) => permission.permission === BUSINESS_MANAGEMENT_PERMISSION)?.status === "granted" || tokenDebug.scopes.includes(BUSINESS_MANAGEMENT_PERMISSION);
+  if (businessManagementGranted) {
+    try {
+      const businessesUrl = new URL(`https://graph.facebook.com/${config.version}/me/businesses`);
+      businessesUrl.searchParams.set("fields", "id,name");
+      businessesUrl.searchParams.set("access_token", userAccessToken);
+      const businesses = await metaJson<{ data?: GraphBusiness[] }>(businessesUrl, "businesses.discovery");
+      const validBusinesses = (businesses.data ?? []).filter((business) => typeof business.id === "string" && business.id.length > 0);
+      businessAccessDetected = validBusinesses.length > 0;
+      const assets = new Map<string, GraphAsset>();
+      for (const business of validBusinesses) {
+        businessAssetIds.add(business.id!);
+        for (const edge of ["owned_pages", "client_pages", "assigned_pages"] as const) {
+          try {
+            const assetsUrl = new URL(`https://graph.facebook.com/${config.version}/${business.id}/${edge}`);
+            assetsUrl.searchParams.set("fields", "id,name,tasks,access_token");
+            assetsUrl.searchParams.set("access_token", userAccessToken);
+            const result = await metaJson<{ data?: GraphAsset[] }>(assetsUrl, `businesses.${edge}`);
+            for (const asset of result.data ?? []) if (asset.id) assets.set(asset.id, asset);
+          } catch (error) {
+            errors.push(diagnosticError(error));
+          }
+        }
+      }
+      businessAssetsReturned = assets.size;
+      for (const asset of assets.values()) {
+        businessAssetIds.add(asset.id!);
+        const page = normalizePage(asset);
+        if (page) mergePage(pagesById, page);
+      }
+    } catch (error) {
+      errors.push(diagnosticError(error));
+      businessAccessDetected = "unknown";
+    }
+  }
+
+  for (const targetId of granularTargetIds) {
+    const diagnostic = targetDiagnostics.get(targetId);
+    if (diagnostic?.verification === "TARGET_PAGE_VERIFIED") continue;
+    if (businessAssetIds.has(targetId)) setTargetDiagnostic(targetId, "TARGET_BUSINESS_ASSET");
+    else if (!diagnostic) setTargetDiagnostic(targetId, "TARGET_UNRESOLVED");
+  }
   const mergedPages = [...pagesById.values()];
+  const granularTargetDiagnostics = granularTargetIds.map((targetId) => targetDiagnostics.get(targetId) ?? { targetId, associatedScopes: [...(targetScopes.get(targetId) ?? [])], verification: "TARGET_UNRESOLVED" as const });
+  const granularPageTargets = granularTargetDiagnostics.filter((target) => target.verification === "TARGET_PAGE_VERIFIED").length;
+  const businessAssetTargets = granularTargetDiagnostics.filter((target) => target.verification === "TARGET_BUSINESS_ASSET").length;
+  const unresolvedGranularTargets = granularTargetDiagnostics.filter((target) => target.verification === "TARGET_UNRESOLVED").length;
   const diagnostics = {
     rawRowsReturned: rows.length,
     validPageIdentities: validRows.length,
     displayablePageCount: mergedPages.length,
     rowsWithPageAccessToken: rows.filter((row) => typeof row.access_token === "string" && row.access_token.length > 0).length,
-    meAccountsPageCount: pages.length,
+    meAccountsPageCount: new Set(validRows.map((page) => page.id)).size,
+    assignedPagesPageCount,
     granularTargetIds: granularTargetIds.length,
+    granularPageTargets,
+    businessAssetTargets,
+    unresolvedGranularTargets,
+    granularTargetDiagnostics,
     verifiedGranularPages,
     finalMergedPages: mergedPages.length,
   } satisfies PageDiscoveryDiagnostics;
   logger.info({ operation: "pages.discovery.summary", ...diagnostics, paginationRequests: requests, paginationTruncated: Boolean(next) }, "Meta Page discovery summary");
-  return { pages: mergedPages, diagnostics };
+  return { pages: mergedPages, diagnostics, errors, businessAccessDetected, businessAssetsReturned };
 }
 
 export async function discoverPages(userAccessToken: string, tokenDebug?: MetaTokenDebug): Promise<MetaPage[]> {
@@ -356,10 +534,6 @@ export async function resolvePageAccessToken(userAccessToken: string, page: Meta
   return result.access_token;
 }
 
-type GraphUser = { id?: string; name?: string };
-type GraphBusiness = { id?: string; name?: string };
-type GraphAsset = { id?: string; name?: string };
-
 function diagnosticError(error: unknown) {
   if (error instanceof MetaApiError) return { operation: error.details.operation, code: error.details.code, subcode: error.details.subcode, type: error.details.type };
   return { operation: "meta.diagnostic" };
@@ -373,7 +547,7 @@ function permissionCheck(permissions: MetaPermissionDiagnostic[], permission: st
 }
 
 function likelyCauseForEmptyPages(input: { permissions: MetaPermissionDiagnostic[]; loginConfigurationConfigured: boolean; businessAccessDetected: BusinessAccessState; businessAssetsReturned: number | null }) {
-  const missing = missingRequiredPermissions(input.permissions);
+  const missing = missingBlockingPagePermissions(input.permissions);
   if (missing.length > 0) return {
     likelyCause: "Required Page permissions were not actually granted to this login.",
     recommendedAction: `Reconnect Facebook and grant: ${missing.map((item) => item.permission).join(", ")}.`,
@@ -381,6 +555,10 @@ function likelyCauseForEmptyPages(input: { permissions: MetaPermissionDiagnostic
   if (!input.loginConfigurationConfigured) return {
     likelyCause: "The Facebook Login for Business Login Configuration ID is missing.",
     recommendedAction: "Set the correct Login Configuration ID in Meta Platform settings, then reconnect Facebook.",
+  };
+  if (input.permissions.find((permission) => permission.permission === BUSINESS_MANAGEMENT_PERMISSION)?.status !== "granted") return {
+    likelyCause: "business_management was not granted to this Login for Business session, so Business Portfolio Pages may not be discoverable.",
+    recommendedAction: "Add business_management to the Meta Login Configuration and reconnect. Directly-owned Pages can still connect when the four Page permissions are granted.",
   };
   if (input.businessAccessDetected === true && (input.businessAssetsReturned ?? 0) > 0) return {
     likelyCause: "This user has Business Portfolio asset access, but no directly manageable Page was exposed by this login.",
@@ -412,36 +590,10 @@ export async function runPageAccessDiagnostic(userAccessToken: string, options: 
   if (!user.id) throw new MetaApiError("Meta did not return an authenticated user identity.", { operation: "oauth.user" });
 
   const permissions = await getGrantedPermissions(userAccessToken);
-  const pageDiscovery = await discoverPageRows(userAccessToken, tokenDebug);
+  const pageDiscovery = await discoverPageRows(userAccessToken, tokenDebug, permissions);
   const { pages } = pageDiscovery;
-
-  let businessAccessDetected: BusinessAccessState = "unknown";
-  let businessAssetsReturned: number | null = null;
-  try {
-    const businessesUrl = new URL(`https://graph.facebook.com/${config.version}/me/businesses`);
-    businessesUrl.searchParams.set("fields", "id,name");
-    businessesUrl.searchParams.set("access_token", userAccessToken);
-    const businesses = await metaJson<{ data?: GraphBusiness[] }>(businessesUrl, "businesses.discovery");
-    const validBusinesses = (businesses.data ?? []).filter((business) => business.id);
-    businessAccessDetected = validBusinesses.length > 0;
-    const assets = new Map<string, GraphAsset>();
-    for (const business of validBusinesses) {
-      for (const edge of ["owned_pages", "client_pages"] as const) {
-        try {
-          const assetsUrl = new URL(`https://graph.facebook.com/${config.version}/${business.id}/${edge}`);
-          assetsUrl.searchParams.set("fields", "id,name");
-          assetsUrl.searchParams.set("access_token", userAccessToken);
-          const result = await metaJson<{ data?: GraphAsset[] }>(assetsUrl, `businesses.${edge}`);
-          for (const asset of result.data ?? []) if (asset.id) assets.set(asset.id, asset);
-        } catch (error) {
-          errors.push(diagnosticError(error));
-        }
-      }
-    }
-    businessAssetsReturned = assets.size;
-  } catch (error) {
-    errors.push(diagnosticError(error));
-  }
+  errors.push(...pageDiscovery.errors);
+  const { businessAccessDetected, businessAssetsReturned } = pageDiscovery;
 
   const loginConfigurationConfigured = Boolean(config.loginConfigurationId);
   const emptyCause = likelyCauseForEmptyPages({ permissions, loginConfigurationConfigured, businessAccessDetected, businessAssetsReturned });
@@ -455,6 +607,7 @@ export async function runPageAccessDiagnostic(userAccessToken: string, options: 
     pages_read_engagement: permissionCheck(permissions, "pages_read_engagement"),
     pages_manage_metadata: permissionCheck(permissions, "pages_manage_metadata"),
     pages_messaging: permissionCheck(permissions, "pages_messaging"),
+    business_management: permissionCheck(permissions, BUSINESS_MANAGEMENT_PERMISSION),
     loginConfiguration: loginConfigurationConfigured ? { status: "PASS" as const } : { status: "FAIL" as const, detail: "not configured" },
     manageablePages: pages.length > 0 ? { status: "PASS" as const } : { status: "FAIL" as const, detail: "Meta returned zero Page identities" },
   };
@@ -475,6 +628,11 @@ export async function runPageAccessDiagnostic(userAccessToken: string, options: 
       diagnostics: {
         directManageablePages: pageDiscovery.diagnostics.displayablePageCount,
         granularTargetIds: pageDiscovery.diagnostics.granularTargetIds ?? 0,
+        granularPageTargets: pageDiscovery.diagnostics.granularPageTargets ?? 0,
+        businessAssetTargets: pageDiscovery.diagnostics.businessAssetTargets ?? 0,
+        unresolvedGranularTargets: pageDiscovery.diagnostics.unresolvedGranularTargets ?? 0,
+        assignedPages: pageDiscovery.diagnostics.assignedPagesPageCount ?? 0,
+        granularTargetDiagnostics: pageDiscovery.diagnostics.granularTargetDiagnostics ?? [],
         verifiedGranularPages: pageDiscovery.diagnostics.verifiedGranularPages ?? 0,
         finalMergedPages: pageDiscovery.diagnostics.finalMergedPages ?? pageDiscovery.diagnostics.displayablePageCount,
         granularAssetsAuthorized: (pageDiscovery.diagnostics.granularTargetIds ?? 0) > 0 && (pageDiscovery.diagnostics.verifiedGranularPages ?? 0) > 0,

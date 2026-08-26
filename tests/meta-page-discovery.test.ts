@@ -70,7 +70,7 @@ describe("Meta Page discovery", () => {
   });
 
   it("discovers a Login for Business Page from granular target IDs when /me/accounts is empty", async () => {
-    fetchMock.mockResolvedValueOnce(graphResponse({ data: [] })).mockResolvedValueOnce(graphResponse({ id: "PAGE_123", name: "Test Facebook Page" }));
+    fetchMock.mockResolvedValueOnce(graphResponse({ data: [] })).mockResolvedValueOnce(graphResponse({ data: [] })).mockResolvedValueOnce(graphResponse({ id: "PAGE_123", name: "Test Facebook Page" }));
     const { discoverPages, pageDiscoveryStatus } = await import("@/services/meta/service");
     const result = await discoverPages("USER_TOKEN", { ...validDebug, granularScopes: [
       { scope: "pages_show_list", targetIds: ["PAGE_123"] }, { scope: "pages_manage_metadata", targetIds: ["PAGE_123"] }, { scope: "pages_messaging", targetIds: ["PAGE_123"] },
@@ -80,7 +80,7 @@ describe("Meta Page discovery", () => {
   });
 
   it("merges and deduplicates Pages from both sources", async () => {
-    fetchMock.mockResolvedValueOnce(graphResponse({ data: [{ id: "PAGE_123", name: "Page A" }, { id: "PAGE_456", name: "Page B" }] })).mockResolvedValueOnce(graphResponse({ id: "PAGE_123", name: "Page A", access_token: "PAGE_TOKEN" }));
+    fetchMock.mockResolvedValueOnce(graphResponse({ data: [{ id: "PAGE_123", name: "Page A" }, { id: "PAGE_456", name: "Page B" }] })).mockResolvedValueOnce(graphResponse({ data: [] })).mockResolvedValueOnce(graphResponse({ id: "PAGE_123", name: "Page A", access_token: "PAGE_TOKEN" }));
     const { discoverPages } = await import("@/services/meta/service");
     await expect(discoverPages("USER_TOKEN", { ...validDebug, granularScopes: [{ scope: "pages_messaging", targetIds: ["PAGE_123"] }] })).resolves.toEqual([{ id: "PAGE_123", name: "Page A", access_token: "PAGE_TOKEN" }, { id: "PAGE_456", name: "Page B" }]);
   });
@@ -114,6 +114,7 @@ describe("Meta Page discovery", () => {
       .mockResolvedValueOnce(graphResponse({ id: "user-1", name: "Admin" }))
       .mockResolvedValueOnce(graphResponse({ data: validDebug.scopes.map((permission) => ({ permission, status: "granted" })) }))
       .mockResolvedValueOnce(graphResponse({ data: [] }))
+      .mockResolvedValueOnce(graphResponse({ data: [] }))
       .mockResolvedValueOnce(graphResponse({ id: "PAGE_123", name: "Test Facebook Page" }))
       .mockResolvedValueOnce(graphResponse({ data: [] }));
     const { runPageAccessDiagnostic, pageDiscoveryStatus } = await import("@/services/meta/service");
@@ -121,6 +122,55 @@ describe("Meta Page discovery", () => {
     expect(pageDiscoveryStatus(result.diagnostic)).toBe("PAGES_AVAILABLE");
     expect(result.pages).toEqual([{ id: "PAGE_123", name: "Test Facebook Page" }]);
     expect(result.diagnostic.diagnostics).toMatchObject({ granularTargetIds: 1, verifiedGranularPages: 1, finalMergedPages: 1, granularAssetsAuthorized: true });
+    expect(JSON.stringify(result)).not.toContain("USER_TOKEN");
+  });
+
+  it("uses /me/assigned_pages when /me/accounts is empty", async () => {
+    fetchMock
+      .mockResolvedValueOnce(graphResponse({ data: [] }))
+      .mockResolvedValueOnce(graphResponse({ data: [{ id: "PAGE_123", name: "Karseell Bangladesh", tasks: ["MESSAGING"] }] }));
+    const { discoverPages } = await import("@/services/meta/service");
+    await expect(discoverPages("USER_TOKEN")).resolves.toEqual([{ id: "PAGE_123", name: "Karseell Bangladesh", tasks: ["MESSAGING"] }]);
+  });
+
+  it("resolves a business asset target into assigned Page identities", async () => {
+    fetchMock
+      .mockResolvedValueOnce(graphResponse({ data: [] }))
+      .mockResolvedValueOnce(graphResponse({ data: [] }))
+      .mockResolvedValueOnce(graphResponse({ error: { message: "Unsupported get request", code: 100, type: "GraphMethodException", error_subcode: 33 } }, 400))
+      .mockResolvedValueOnce(graphResponse({ data: [{ id: "BUSINESS_123", name: "Business Portfolio" }] }))
+      .mockResolvedValueOnce(graphResponse({ data: [{ id: "PAGE_123", name: "Karseell Bangladesh", access_token: "PAGE_TOKEN" }] }))
+      .mockResolvedValueOnce(graphResponse({ data: [] }))
+      .mockResolvedValueOnce(graphResponse({ data: [] }));
+    const { discoverPages } = await import("@/services/meta/service");
+    await expect(discoverPages("USER_TOKEN", { ...validDebug, scopes: [...validDebug.scopes, "business_management"], granularScopes: [{ scope: "business_management", targetIds: ["BUSINESS_123"] }] })).resolves.toEqual([{ id: "PAGE_123", name: "Karseell Bangladesh", access_token: "PAGE_TOKEN" }]);
+  });
+
+  it("does not let business_management absence break direct Page discovery", async () => {
+    fetchMock
+      .mockResolvedValueOnce(graphResponse({ data: { is_valid: true, app_id: "app-id", type: "USER", user_id: "user-1", scopes: validDebug.scopes, granular_scopes: [] } }))
+      .mockResolvedValueOnce(graphResponse({ id: "user-1", name: "Owner" }))
+      .mockResolvedValueOnce(graphResponse({ data: validDebug.scopes.map((permission) => ({ permission, status: "granted" })) }))
+      .mockResolvedValueOnce(graphResponse({ data: [{ id: "PAGE_123", name: "Direct Page" }] }));
+    const { runPageAccessDiagnostic } = await import("@/services/meta/service");
+    const result = await runPageAccessDiagnostic("USER_TOKEN");
+    expect(result.pages).toEqual([{ id: "PAGE_123", name: "Direct Page" }]);
+    expect(result.diagnostic.checks.business_management).toMatchObject({ status: "FAIL" });
+  });
+
+  it("classifies unresolved granular targets with safe Meta error metadata", async () => {
+    fetchMock
+      .mockResolvedValueOnce(graphResponse({ data: { is_valid: true, app_id: "app-id", type: "USER", user_id: "user-1", scopes: [...validDebug.scopes, "business_management"], granular_scopes: [{ scope: "pages_show_list", target_ids: ["ASSET_123"] }] } }))
+      .mockResolvedValueOnce(graphResponse({ id: "user-1", name: "Admin" }))
+      .mockResolvedValueOnce(graphResponse({ data: [...validDebug.scopes, "business_management"].map((permission) => ({ permission, status: "granted" })) }))
+      .mockResolvedValueOnce(graphResponse({ data: [] }))
+      .mockResolvedValueOnce(graphResponse({ data: [] }))
+      .mockResolvedValueOnce(graphResponse({ error: { message: "Unsupported get request", code: 100, type: "GraphMethodException", error_subcode: 33 } }, 400))
+      .mockResolvedValueOnce(graphResponse({ data: [] }));
+    const { runPageAccessDiagnostic } = await import("@/services/meta/service");
+    const result = await runPageAccessDiagnostic("USER_TOKEN");
+    expect(result.pages).toEqual([]);
+    expect(result.diagnostic.diagnostics.granularTargetDiagnostics).toEqual([expect.objectContaining({ targetId: "ASSET_123", associatedScopes: ["pages_show_list"], verification: "TARGET_UNRESOLVED", metaErrorCode: 100, metaErrorSubcode: 33 })]);
     expect(JSON.stringify(result)).not.toContain("USER_TOKEN");
   });
 });

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/auth/session";
 import { decryptCredential } from "@/lib/encryption/service";
-import { connectMetaPage, healthCheckMetaPage, MetaApiError, missingRequiredPermissions, resolvePageAccessToken, runPageAccessDiagnostic } from "@/services/meta/service";
+import { connectMetaPage, healthCheckMetaPage, MetaApiError, missingBlockingPagePermissions, resolvePageAccessToken, runPageAccessDiagnostic } from "@/services/meta/service";
 import { prisma } from "@/lib/db/prisma";
 import { z } from "zod";
 import { isSameOrigin } from "@/lib/auth/csrf";
@@ -25,7 +25,7 @@ export async function POST(request: Request) {
     const userToken = decryptCredential(state.encryptedUserToken);
     const discovery = await runPageAccessDiagnostic(userToken, { oauthCallback: true });
     const permissions = discovery.diagnostic.permissions;
-    const missing = missingRequiredPermissions(permissions);
+    const missing = missingBlockingPagePermissions(permissions);
     if (missing.length > 0) return NextResponse.json({ status: "PERMISSION_MISSING", permissions, error: "Required Facebook permissions are missing." }, { status: 403 });
     const candidate = discovery.pages.find((page) => page.id === parsed.data.metaPageId);
     if (!candidate) return NextResponse.json({ status: "NO_PAGES", error: "That Page is not available to this Facebook account." }, { status: 403 });

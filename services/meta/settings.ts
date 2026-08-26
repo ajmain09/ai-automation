@@ -2,6 +2,8 @@ import { canonicalUrls, getEnv } from "@/lib/env";
 import { prisma } from "@/lib/db/prisma";
 import { decryptCredential, encryptCredential } from "@/lib/encryption/service";
 
+const META_REQUIRED_PERMISSIONS = ["pages_show_list", "pages_read_engagement", "pages_manage_metadata", "pages_messaging", "business_management"] as const;
+
 export type MetaPlatformConfig = {
   appId: string;
   appSecret: string;
@@ -46,7 +48,7 @@ export async function getMetaControlCenter() {
       loginConfigurationConfigured: Boolean(config.loginConfigurationId),
       oauthRedirectUri: config.redirectUri,
       oauthRedirectConfigured: config.redirectUri === canonicalUrls.metaRedirect,
-      requiredPermissions: ["pages_show_list", "pages_read_engagement", "pages_manage_metadata", "pages_messaging"],
+      requiredPermissions: [...META_REQUIRED_PERMISSIONS],
       status: configured ? "READY" as const : "NOT_CONFIGURED" as const,
       lastError: stored?.lastError ?? null,
       lastTestAt: stored?.lastApiTestAt ?? null,
@@ -98,9 +100,9 @@ export async function testMetaOAuthConfiguration(adminId: string) {
   const productionRedirect = config.redirectUri === canonicalUrls.metaRedirect;
   const constructible = Boolean(config.appId && config.graphApiVersion && config.redirectUri && new URL(`https://www.facebook.com/${config.graphApiVersion}/dialog/oauth`));
   const ready = Boolean(config.appId && config.appSecret && config.loginConfigurationId && productionRedirect && constructible);
-  const error = ready ? null : "OAuth requires App ID, App Secret, Login Configuration ID, required permissions, and the production redirect URI.";
+  const error = ready ? null : "OAuth requires App ID, App Secret, Login Configuration ID, business_management plus the Page permissions, and the production redirect URI.";
   const existing = await storedMetaSetting();
   if (existing) await prisma.metaPlatformSetting.update({ where: { id: existing.id }, data: { status: ready ? "READY" : "ERROR", lastApiTestAt: new Date(), lastError: error } });
   await prisma.auditLog.create({ data: { adminId, action: ready ? "meta.oauth_configuration_tested" : "meta.oauth_configuration_test_failed" } });
-  return { control: await getMetaControlCenter(), diagnostics: { productionRedirect, loginConfigurationId: Boolean(config.loginConfigurationId), oauthUrlConstructible: constructible, requiredPermissions: ["pages_show_list", "pages_read_engagement", "pages_manage_metadata", "pages_messaging"] } };
+  return { control: await getMetaControlCenter(), diagnostics: { productionRedirect, loginConfigurationId: Boolean(config.loginConfigurationId), oauthUrlConstructible: constructible, requiredPermissions: [...META_REQUIRED_PERMISSIONS], businessManagementNote: "business_management is required in the Meta Login Configuration for Business Portfolio Page discovery; direct Page access remains compatible when it is absent." } };
 }
