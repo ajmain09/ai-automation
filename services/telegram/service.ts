@@ -46,10 +46,12 @@ export async function getPageTelegramSettings(pageId: string) {
 
 export async function setPageTelegramDestination(input: { pageId: string; botToken?: string; chatId: string; newOrderEnabled: boolean; updatedOrderEnabled: boolean; cancelledOrderEnabled: boolean }, adminId: string) {
   const result = await prisma.$transaction(async (tx) => {
-    const existing = await tx.pageTelegramSettings.findUnique({ where: { pageId: input.pageId }, select: { encryptedBotToken: true } });
-    const encryptedBotToken = input.botToken?.trim() ? encryptCredential(input.botToken) : existing?.encryptedBotToken ?? null;
-    const status = encryptedBotToken && input.chatId.trim() ? "CONNECTED" : "NOT_CONFIGURED";
-    const settings = await tx.pageTelegramSettings.upsert({ where: { pageId: input.pageId }, update: { encryptedBotToken, chatId: input.chatId.trim(), newOrderEnabled: input.newOrderEnabled, updatedOrderEnabled: input.updatedOrderEnabled, cancelledOrderEnabled: input.cancelledOrderEnabled, status, lastError: null }, create: { pageId: input.pageId, encryptedBotToken, chatId: input.chatId.trim(), newOrderEnabled: input.newOrderEnabled, updatedOrderEnabled: input.updatedOrderEnabled, cancelledOrderEnabled: input.cancelledOrderEnabled, status } });
+    const existing = await tx.pageTelegramSettings.findUnique({ where: { pageId: input.pageId }, select: { encryptedBotToken: true, chatId: true } });
+    const replacingPair = Boolean(input.botToken?.trim()) || existing?.chatId !== input.chatId.trim();
+    const encryptedBotToken = replacingPair ? existing?.encryptedBotToken ?? null : existing?.encryptedBotToken ?? null;
+    const verifiedPair = Boolean(existing?.encryptedBotToken && existing.chatId === input.chatId.trim() && !input.botToken?.trim());
+    const status = verifiedPair ? "CONNECTED" : "NOT_CONFIGURED";
+    const settings = await tx.pageTelegramSettings.upsert({ where: { pageId: input.pageId }, update: { encryptedBotToken, chatId: verifiedPair ? input.chatId.trim() : existing?.chatId ?? input.chatId.trim(), newOrderEnabled: input.newOrderEnabled, updatedOrderEnabled: input.updatedOrderEnabled, cancelledOrderEnabled: input.cancelledOrderEnabled, status, lastError: verifiedPair ? null : "Credential or destination requires a successful Telegram test." }, create: { pageId: input.pageId, encryptedBotToken, chatId: input.chatId.trim(), newOrderEnabled: input.newOrderEnabled, updatedOrderEnabled: input.updatedOrderEnabled, cancelledOrderEnabled: input.cancelledOrderEnabled, status, lastError: "Credential or destination requires a successful Telegram test." } });
     await tx.auditLog.create({ data: { adminId, pageId: input.pageId, action: "telegram.configuration_changed" } });
     return settings;
   });

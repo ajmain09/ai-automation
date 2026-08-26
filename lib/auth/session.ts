@@ -1,6 +1,6 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHmac, createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import argon2 from "argon2";
 import { prisma } from "@/lib/db/prisma";
 import { getEnv, isDevPreview } from "@/lib/env";
@@ -16,6 +16,7 @@ function sign(value: string) { return createHmac("sha256", getEnv().SESSION_SECR
 export async function createSession(adminId: string) {
   const token = `${adminId}.${randomUUID()}.${Date.now()}`;
   const signed = `${token}.${sign(token)}`;
+  if (!isDevPreview()) await prisma.adminSession.create({ data: { adminId, tokenHash: createHash("sha256").update(token).digest("hex"), expiresAt: new Date(Date.now() + SESSION_TTL * 1000) } });
   (await cookies()).set(COOKIE, signed, { httpOnly: true, secure: getEnv().NODE_ENV === "production", sameSite: "lax", path: "/", maxAge: SESSION_TTL });
 }
 
@@ -32,7 +33,8 @@ export async function getCurrentAdmin() {
   const issuedAt = Number(parts[2]);
   if (!Number.isFinite(issuedAt) || Date.now() - issuedAt > SESSION_TTL * 1000) return null;
   if (isDevPreview()) return parts[0] === previewAdmin.id ? { ...previewAdmin, email: getEnv().PREVIEW_ADMIN_EMAIL! } : null;
-  return prisma.admin.findUnique({ where: { id: parts[0] } });
+  const session = await prisma.adminSession.findFirst({ where: { adminId: parts[0], tokenHash: createHash("sha256").update(token).digest("hex"), revokedAt: null, expiresAt: { gt: new Date() } }, include: { admin: true } });
+  return session?.admin ?? null;
 }
 
 export async function requireAdmin() {
@@ -55,7 +57,37 @@ export async function authenticateAdmin(email: string, password: string) {
   return admin;
 }
 
+export function trustedClientKey(request: Request) {
+  // Nginx is configured to overwrite X-Forwarded-For. Use the proxy-appended
+  // address (last hop), never the attacker-controlled first forwarded value.
+  const forwarded = request.headers.get("x-forwarded-for");
+  return forwarded?.split(",").map((part) => part.trim()).filter(Boolean).at(-1) ?? request.headers.get("x-real-ip") ?? "unknown";
+}
+
+export async function loginRateLimit(clientKey: string) {
+  if (isDevPreview()) return { allowed: true, retryAfterSeconds: 0 };
+  const row = await prisma.loginAttempt.findUnique({ where: { clientKey } });
+  if (!row || row.resetAt <= new Date()) return { allowed: true, retryAfterSeconds: 0 };
+  return { allowed: row.attempts < 8, retryAfterSeconds: Math.max(1, Math.ceil((row.resetAt.getTime() - Date.now()) / 1000)) };
+}
+
+export async function recordFailedLogin(clientKey: string, email?: string) {
+  if (isDevPreview()) return;
+  const resetAt = new Date(Date.now() + 5 * 60_000);
+  await prisma.loginAttempt.upsert({ where: { clientKey }, update: { attempts: { increment: 1 }, resetAt }, create: { clientKey, attempts: 1, resetAt, admin: email ? { connect: { email: email.toLowerCase().trim() } } : undefined } }).catch(() => undefined);
+}
+
+export async function clearLoginRateLimit(clientKey: string) {
+  if (!isDevPreview()) await prisma.loginAttempt.deleteMany({ where: { clientKey } });
+}
+
 export async function logout() {
+  const raw = (await cookies()).get(COOKIE)?.value;
+  if (raw && !isDevPreview()) { const parts = raw.split("."); const signature = parts.pop(); if (signature) await prisma.adminSession.updateMany({ where: { tokenHash: createHash("sha256").update(parts.join(".")).digest("hex"), revokedAt: null }, data: { revokedAt: new Date() } }); }
   (await cookies()).delete(COOKIE);
   redirect("/login");
+}
+
+export async function revokeAllAdminSessions(adminId: string) {
+  if (!isDevPreview()) await prisma.adminSession.updateMany({ where: { adminId, revokedAt: null }, data: { revokedAt: new Date() } });
 }

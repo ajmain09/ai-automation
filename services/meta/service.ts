@@ -284,7 +284,6 @@ export function missingBlockingPagePermissions(permissions: MetaPermissionDiagno
 }
 
 type GraphPage = { id?: string; name?: string; access_token?: string; tasks?: unknown };
-type PageDiscoveryResponse = { data?: GraphPage[]; paging?: { next?: string } };
 type GranularPageResponse = GraphPage;
 type GraphUser = { id?: string; name?: string };
 type GraphBusiness = { id?: string; name?: string };

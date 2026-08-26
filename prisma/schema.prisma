@@ -97,6 +97,33 @@ model Admin {
   updatedAt      DateTime             @updatedAt
   auditLogs      AuditLog[]
   recoveryTokens AdminRecoveryToken[]
+  sessions       AdminSession[]
+  loginAttempts  LoginAttempt[]
+}
+
+model AdminSession {
+  id        String    @id @default(uuid()) @db.Uuid
+  adminId   String    @db.Uuid
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+  admin     Admin     @relation(fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@index([adminId, expiresAt])
+}
+
+model LoginAttempt {
+  id        String   @id @default(uuid()) @db.Uuid
+  adminId   String?  @db.Uuid
+  clientKey String   @unique
+  attempts  Int      @default(0)
+  resetAt   DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  admin     Admin?   @relation(fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@index([resetAt])
 }
 
 model AdminRecoveryToken {
@@ -109,6 +136,14 @@ model AdminRecoveryToken {
   admin     Admin     @relation(fields: [adminId], references: [id], onDelete: Cascade)
 
   @@index([adminId, expiresAt])
+}
+
+model WorkerHeartbeat {
+  id              String   @id @default(uuid()) @db.Uuid
+  workerId        String   @unique
+  startedAt       DateTime
+  lastHeartbeatAt DateTime
+  updatedAt       DateTime @updatedAt
 }
 
 model Page {
@@ -552,6 +587,7 @@ model Job {
   expiresAt      DateTime?
   lastError      String?
   lockedAt       DateTime?
+  lockedBy       String?
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
   page           Page?         @relation(fields: [pageId], references: [id], onDelete: Cascade)

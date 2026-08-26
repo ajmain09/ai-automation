@@ -64,9 +64,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ pag
       return NextResponse.json({ ok: true, settings: { ...settings, encryptedApiKey: undefined, apiKeyConfigured: true } });
     } catch { return NextResponse.json({ error: "DeepSeek rejected this candidate credential. The existing credential was kept." }, { status: 422 }); }
   }
+  if (apiKey?.trim()) return NextResponse.json({ error: "Test the candidate DeepSeek credential before saving it. The existing credential was preserved." }, { status: 422 });
   const settings = await prisma.$transaction(async (tx) => {
     const existing = await tx.pageAiSettings.findUnique({ where: { pageId: page.id }, select: { status: true } });
-    const keyChanged = Boolean(apiKey?.trim());
+    const keyChanged = false;
     const value = await tx.pageAiSettings.upsert({ where: { pageId: page.id }, update: { ...rest, ...(keyChanged ? { encryptedApiKey: encryptCredential(apiKey!), status: "UNVERIFIED", lastError: "Credential replacement requires a successful Test AI." } : {}), ...(modelOverride ? { model: modelOverride } : {}), ...(thinking ? { thinkingOverride: thinking === "master" ? null : thinking } : {}), ...(manualActivityCooldownSeconds !== undefined ? { manualActivityCooldown: manualActivityCooldownSeconds } : {}) }, create: { pageId: page.id, ...rest, ...(keyChanged ? { encryptedApiKey: encryptCredential(apiKey!) } : {}), ...(modelOverride ? { model: modelOverride } : {}), ...(thinking && thinking !== "master" ? { thinkingOverride: thinking } : {}), ...(manualActivityCooldownSeconds !== undefined ? { manualActivityCooldown: manualActivityCooldownSeconds } : {}), status: keyChanged ? "UNVERIFIED" : existing?.status ?? "NOT_CONFIGURED" } });
     await tx.auditLog.create({ data: { adminId: admin.id, pageId: page.id, action: "ai.page_configuration_changed" } });
     return value;

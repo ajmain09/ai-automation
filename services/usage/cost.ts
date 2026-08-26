@@ -37,10 +37,10 @@ export function normalizeModel(model: string | null | undefined, thinking = fals
 }
 
 export function budgetState(input: { usedBdt: number; budgetBdt?: number | null; warningThreshold: number; paused?: boolean }) {
-  if (input.paused) return "PAUSED_BY_BUDGET" as const;
-  if (!input.budgetBdt || input.budgetBdt <= 0) return "HEALTHY" as const;
+  if (input.paused) return "PAUSED" as const;
+  if (!input.budgetBdt || input.budgetBdt <= 0) return "NO_BUDGET" as const;
   if (input.usedBdt >= input.budgetBdt) return "LIMIT_REACHED" as const;
   const threshold = input.warningThreshold > 1 ? input.warningThreshold / 100 : input.warningThreshold;
   if (input.usedBdt >= input.budgetBdt * threshold) return "WARNING" as const;
-  return "HEALTHY" as const;
+  return "OK" as const;
 }

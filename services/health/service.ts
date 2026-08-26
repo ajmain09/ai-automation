@@ -7,6 +7,33 @@ import { resolvePageId } from "@/services/pages/queries";
 
 export type HealthState = "HEALTHY" | "DEGRADED" | "ACTION_REQUIRED" | "PAUSED";
 export type HealthResult = { component: string; state: HealthState; detail: string };
+export const WORKER_HEALTH_THRESHOLDS_SECONDS = { healthy: 90, stale: 300 } as const;
+export function workerHealthState(ageSeconds: number) { return ageSeconds <= WORKER_HEALTH_THRESHOLDS_SECONDS.healthy ? "HEALTHY" : ageSeconds <= WORKER_HEALTH_THRESHOLDS_SECONDS.stale ? "STALE" : "DOWN" as const; }
+
+export async function getOperationalHealth() {
+  const checkedAt = new Date();
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    const [heartbeats, pending, running, deadLetter, oldest, webhook, telegram, telegramLast, openIssues, highIssues] = await Promise.all([
+      prisma.workerHeartbeat.findMany({ orderBy: { lastHeartbeatAt: "desc" } }),
+      prisma.job.count({ where: { status: "PENDING" } }),
+      prisma.job.count({ where: { status: "RUNNING" } }),
+      prisma.job.count({ where: { status: "DEAD_LETTER" } }),
+      prisma.job.findFirst({ where: { status: "PENDING" }, orderBy: { runAt: "asc" }, select: { runAt: true } }),
+      prisma.webhookEvent.findFirst({ where: { signatureValid: true }, orderBy: { receivedAt: "desc" }, select: { receivedAt: true, pageId: true } }),
+      prisma.deliveryOutbox.groupBy({ by: ["status"], _count: { _all: true } }),
+      prisma.deliveryOutbox.findFirst({ where: { status: "SENT" }, orderBy: { sentAt: "desc" }, select: { sentAt: true } }),
+      prisma.issue.count({ where: { status: { in: ["OPEN", "ACKNOWLEDGED"] } } }),
+      prisma.issue.count({ where: { status: { in: ["OPEN", "ACKNOWLEDGED"] }, severity: "high" } }),
+    ]);
+    const now = checkedAt.getTime();
+    const workers = heartbeats.map((heartbeat) => { const age = Math.max(0, (now - heartbeat.lastHeartbeatAt.getTime()) / 1000); return { workerId: heartbeat.workerId, startedAt: heartbeat.startedAt, lastHeartbeatAt: heartbeat.lastHeartbeatAt, state: workerHealthState(age), ageSeconds: Math.round(age) }; });
+    const workerState = workers.some((item) => item.state === "HEALTHY") ? "HEALTHY" : workers.some((item) => item.state === "STALE") ? "STALE" : "DOWN";
+    const telegramCount = (status: string) => telegram.find((item) => item.status === status)?._count._all ?? 0;
+    return { checkedAt, application: { state: "HEALTHY", alive: true }, database: { state: "HEALTHY", reachable: true }, worker: { state: workerState, workers }, queue: { state: deadLetter > 0 ? "DEGRADED" : "HEALTHY", pending, running, deadLetter, oldestPendingAt: oldest?.runAt ?? null, oldestPendingAgeSeconds: oldest ? Math.max(0, Math.round((now - oldest.runAt.getTime()) / 1000)) : 0 }, webhook: { state: webhook ? "ACTIVE" : "INACTIVE", lastValidReceivedAt: webhook?.receivedAt ?? null, pageId: webhook?.pageId ?? null }, telegram: { state: telegramCount("FAILED_PERMANENT") + telegramCount("DEAD_LETTER") > 0 ? "DEGRADED" : "HEALTHY", pending: telegramCount("PENDING") + telegramCount("SENDING"), failedRetryable: telegramCount("FAILED_RETRYABLE"), failedPermanent: telegramCount("FAILED_PERMANENT"), deadLetter: telegramCount("DEAD_LETTER"), lastSuccessfulDeliveryAt: telegramLast?.sentAt ?? null }, issues: { state: highIssues > 0 ? "ACTION_REQUIRED" : openIssues > 0 ? "DEGRADED" : "HEALTHY", open: openIssues, highSeverityOpen: highIssues } };
+  } catch { return { checkedAt, application: { state: "HEALTHY", alive: true }, database: { state: "ACTION_REQUIRED", reachable: false }, worker: { state: "DOWN", workers: [] }, queue: { state: "UNKNOWN", pending: 0, running: 0, deadLetter: 0, oldestPendingAt: null, oldestPendingAgeSeconds: 0 }, webhook: { state: "UNKNOWN", lastValidReceivedAt: null, pageId: null }, telegram: { state: "UNKNOWN", pending: 0, failedRetryable: 0, failedPermanent: 0, deadLetter: 0, lastSuccessfulDeliveryAt: null }, issues: { state: "UNKNOWN", open: 0, highSeverityOpen: 0 } };
+  }
+}
 
 export async function getSystemHealth(pageId?: string): Promise<HealthResult[]> {
   const results: HealthResult[] = [];

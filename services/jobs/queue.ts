@@ -16,6 +16,7 @@ export interface JobQueue {
   complete(id: string): Promise<void>;
   fail(id: string, error: string, now?: Date): Promise<void>;
   release(id: string): Promise<void>;
+  renew(id: string, workerId: string): Promise<boolean>;
   expire(now?: Date): Promise<number>;
 }
 
@@ -48,6 +49,7 @@ export class InMemoryJobQueue implements JobQueue {
   async complete(id: string) { const job = this.jobs.find((item) => item.id === id); if (job) job.status = "SUCCEEDED"; }
   async fail(id: string, error: string, now = new Date()) { const job = this.jobs.find((item) => item.id === id); if (!job) return; job.lastError = error; job.leaseUntil = undefined; if (job.attempts >= job.maxAttempts) job.status = "DEAD_LETTER"; else { job.status = "PENDING"; job.runAt = new Date(now.getTime() + retryDelayMs(job.attempts)); } }
   async release(id: string) { const job = this.jobs.find((item) => item.id === id); if (job && job.status === "RUNNING") { job.status = "PENDING"; job.leaseUntil = undefined; } }
+  async renew(id: string) { const job = this.jobs.find((item) => item.id === id); if (!job || job.status !== "RUNNING") return false; job.leaseUntil = new Date(Date.now() + 60_000); return true; }
   async expire(now = new Date()) { let count = 0; for (const job of this.jobs) if (job.status === "PENDING" && job.expiresAt && job.expiresAt <= now) { job.status = "EXPIRED"; count++; } return count; }
   snapshot() { return this.jobs.map((job) => ({ ...job })); }
 }
@@ -70,23 +72,25 @@ export class PostgresJobQueue implements JobQueue {
     return prisma.$transaction(async (tx) => {
       const now = new Date();
       await tx.job.updateMany({ where: { status: "RUNNING", leaseUntil: { lt: now } }, data: { status: "PENDING", leaseUntil: null } });
-      const active = await tx.job.findMany({ where: { status: "RUNNING", conversationId: { not: null } }, select: { conversationId: true } });
-      const activeConversationIds = active.flatMap((item) => item.conversationId ? [item.conversationId] : []);
-      const candidate = await tx.job.findFirst({ where: { status: "PENDING", runAt: { lte: now }, OR: [{ expiresAt: null }, { expiresAt: { gt: now } }], AND: [{ OR: [{ conversationId: null }, { conversationId: { notIn: activeConversationIds } }] }] }, orderBy: { runAt: "asc" } });
-      if (!candidate) return null;
-      if (candidate.conversationId) {
-        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${candidate.conversationId}, 0))`;
-        const active = await tx.job.count({ where: { conversationId: candidate.conversationId, status: "RUNNING" } });
-        if (active > 0) return null;
-      }
-      const claimed = await tx.job.update({ where: { id: candidate.id }, data: { status: "RUNNING", attempts: { increment: 1 }, leaseUntil: new Date(now.getTime() + 60_000), lockedAt: now, lastError: null } });
+      const rows = await tx.$queryRaw<Array<{ id: string }>>`WITH candidate AS (
+        SELECT j."id" FROM "Job" j
+        WHERE j."status" = 'PENDING' AND j."runAt" <= ${now}
+          AND (j."expiresAt" IS NULL OR j."expiresAt" > ${now})
+          AND NOT EXISTS (SELECT 1 FROM "Job" active WHERE active."status" = 'RUNNING' AND active."conversationId" IS NOT NULL AND active."conversationId" = j."conversationId")
+        ORDER BY j."runAt" ASC, j."id" ASC FOR UPDATE SKIP LOCKED LIMIT 1
+      ) UPDATE "Job" j SET "status" = 'RUNNING', "attempts" = j."attempts" + 1,
+        "leaseUntil" = ${new Date(now.getTime() + 60_000)}, "lockedAt" = ${now}, "lockedBy" = ${workerId}, "lastError" = NULL, "updatedAt" = ${now}
+      FROM candidate WHERE j."id" = candidate."id" RETURNING j."id"`;
+      if (!rows[0]) return null;
+      const claimed = await tx.job.findUniqueOrThrow({ where: { id: rows[0].id } });
       return { ...claimed, payload: claimed.payload ?? {}, workerId } as unknown as QueueJob;
     });
   }
-  async complete(id: string) { await prisma.job.update({ where: { id }, data: { status: "SUCCEEDED", leaseUntil: null } }); }
-  async fail(id: string, error: string, now = new Date()) { const job = await prisma.job.findUnique({ where: { id } }); if (!job) return; const terminal = job.attempts >= job.maxAttempts; await prisma.$transaction(async (tx) => { await tx.job.update({ where: { id }, data: { status: terminal ? "DEAD_LETTER" : "PENDING", runAt: new Date(now.getTime() + (terminal ? 0 : retryDelayMs(job.attempts))), leaseUntil: null, lastError: error.slice(0, 1000) } }); if (terminal) await tx.issue.create({ data: { pageId: job.pageId, type: "FAILED_JOB", severity: "high", title: "Job moved to dead letter", description: error.slice(0, 500), resolutionAction: "Review the failed job and retry after correcting the underlying issue." } }); }); }
-  async release(id: string) { await prisma.job.updateMany({ where: { id, status: "RUNNING" }, data: { status: "PENDING", leaseUntil: null } }); }
-  async expire(now = new Date()) { const result = await prisma.job.updateMany({ where: { status: { in: ["PENDING", "RUNNING"] }, expiresAt: { lte: now } }, data: { status: "EXPIRED", leaseUntil: null } }); return result.count; }
+  async complete(id: string) { await prisma.job.updateMany({ where: { id, status: "RUNNING" }, data: { status: "SUCCEEDED", leaseUntil: null, lockedBy: null } }); }
+  async fail(id: string, error: string, now = new Date()) { const job = await prisma.job.findUnique({ where: { id } }); if (!job) return; const terminal = job.attempts >= job.maxAttempts; await prisma.$transaction(async (tx) => { await tx.job.update({ where: { id }, data: { status: terminal ? "DEAD_LETTER" : "PENDING", runAt: new Date(now.getTime() + (terminal ? 0 : retryDelayMs(job.attempts))), leaseUntil: null, lockedBy: null, lastError: error.slice(0, 1000) } }); if (terminal) await tx.issue.create({ data: { pageId: job.pageId, type: "FAILED_JOB", severity: "high", title: "Job moved to dead letter", description: error.slice(0, 500), resolutionAction: "Review the failed job and retry after correcting the underlying issue." } }); }); }
+  async release(id: string) { await prisma.job.updateMany({ where: { id, status: "RUNNING" }, data: { status: "PENDING", leaseUntil: null, lockedBy: null } }); }
+  async renew(id: string, workerId: string) { const result = await prisma.job.updateMany({ where: { id, status: "RUNNING", lockedBy: workerId, leaseUntil: { gt: new Date() } }, data: { leaseUntil: new Date(Date.now() + 60_000) } }); return result.count === 1; }
+  async expire(now = new Date()) { const result = await prisma.job.updateMany({ where: { status: { in: ["PENDING", "RUNNING"] }, expiresAt: { lte: now } }, data: { status: "EXPIRED", leaseUntil: null, lockedBy: null } }); return result.count; }
 }
 
 export async function enqueuePostgresJobTx<T>(tx: Prisma.TransactionClient, input: EnqueueInput<T>) {
@@ -104,6 +108,7 @@ export async function runWorker(queue: JobQueue, handler: (job: QueueJob) => Pro
     if (Date.now() - lastMaintenance >= 60_000) { await reconcileExpiredBudgetReservations().catch(() => undefined); lastMaintenance = Date.now(); }
     const job = await queue.claim(workerId);
     if (!job) { await new Promise((resolve) => setTimeout(resolve, options.pollMs ?? 250)); continue; }
-    try { await handler(job); await queue.complete(job.id); } catch (error) { await queue.fail(job.id, error instanceof Error ? error.message : "Unknown job failure"); }
+    const heartbeat = setInterval(() => { void queue.renew(job.id, workerId); }, 20_000);
+    try { await handler(job); await queue.complete(job.id); } catch (error) { await queue.fail(job.id, error instanceof Error ? error.message : "Unknown job failure"); } finally { clearInterval(heartbeat); }
   }
 }

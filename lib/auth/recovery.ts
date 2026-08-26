@@ -19,6 +19,7 @@ export async function resetAdminPassword(token: string, newPassword: string) {
     if (!recovery || recovery.usedAt || recovery.expiresAt <= new Date()) throw new Error("Recovery token is invalid or expired");
     const passwordHash = await argon2.hash(newPassword, { type: argon2.argon2id });
     await tx.admin.update({ where: { id: recovery.adminId }, data: { passwordHash } });
+    await tx.adminSession.updateMany({ where: { adminId: recovery.adminId, revokedAt: null }, data: { revokedAt: new Date() } });
     await tx.adminRecoveryToken.update({ where: { id: recovery.id }, data: { usedAt: new Date() } });
     await tx.auditLog.create({ data: { adminId: recovery.adminId, action: "admin.password_reset" } });
     return true;
