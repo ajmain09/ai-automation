@@ -65,7 +65,7 @@ export function canonicalQuestionKey(value: string | null | undefined): FactKey 
   return canonicalFactKey(key);
 }
 
-function normalizeValue(key: FactKey, value: unknown, countryCode = "US"): unknown {
+function normalizeValue(key: FactKey, value: unknown, countryCode = "BD"): unknown {
   if (typeof value === "string") {
     const cleaned = value.trim().replace(/\s+/g, " ");
     if (!cleaned) return null;
@@ -79,7 +79,7 @@ function displayValue(value: unknown) { return typeof value === "string" ? value
 function isAmbiguous(value: unknown, confidence?: number) { return (confidence !== undefined && confidence < 0.8) || (typeof value === "string" && /\b(maybe|probably|possibly|might|হয়তো|সম্ভবত|মনে হয়)\b/i.test(value)); }
 function json(value: unknown) { return value as Prisma.InputJsonValue; }
 
-export function applyFactUpdates(current: unknown, updates: AiResponse["fact_updates"], countryCode = "US"): CustomerMemory {
+export function applyFactUpdates(current: unknown, updates: AiResponse["fact_updates"], countryCode = "BD"): CustomerMemory {
   const memory = memorySchema.parse(current ?? emptyMemory());
   for (const update of updates) {
     const key = canonicalFactKey(update.key);
@@ -124,8 +124,9 @@ async function updateCustomerMemoryOnce(input: MemoryUpdateInput) {
     }
     // Lock the one memory row for this customer. This serializes retries and concurrent workers without Redis.
     await tx.customerMemory.update({ where: { id: row.id }, data: { version: { increment: 1 } } });
-    let memory = memorySchema.parse(row.memory ?? emptyMemory());
-    const activeFacts = await tx.customerMemoryFact.findMany({ where: { pageId: input.pageId, customerId: customer.id, status: { in: ["ACTIVE", "UNCONFIRMED"] } } });
+    const currentRow = await tx.customerMemory.findUniqueOrThrow({ where: { id: row.id } });
+    let memory = memorySchema.parse(currentRow.memory ?? emptyMemory());
+    const activeFacts = await tx.customerMemoryFact.findMany({ where: { pageId: input.pageId, customerId: customer.id, status: { in: ["ACTIVE", "UNCONFIRMED"] }, OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] } });
     let changed = false;
     const sourceType = input.sourceType ?? "AI_EXTRACTION";
     for (const update of input.updates) {
@@ -177,7 +178,7 @@ export async function updateCustomerMemory(input: MemoryUpdateInput) {
 }
 
 export async function getPageCustomerMemory(pageId: string, customerId: string) {
-  const customer = await prisma.customer.findFirst({ where: { id: customerId, pageId }, include: { memory: { include: { facts: { where: { pageId }, orderBy: { updatedAt: "desc" } } } } } });
+  const customer = await prisma.customer.findFirst({ where: { id: customerId, pageId }, include: { memory: { include: { facts: { where: { pageId, OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] }, orderBy: { updatedAt: "desc" } } } } } });
   if (!customer) return null;
   return { customerId: customer.id, pageId: customer.pageId, memory: memorySchema.parse(customer.memory?.memory ?? emptyMemory()), facts: customer.memory?.facts ?? [] };
 }

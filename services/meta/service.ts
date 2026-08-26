@@ -3,14 +3,63 @@ import { prisma } from "@/lib/db/prisma";
 import { decryptCredential, encryptCredential } from "@/lib/encryption/service";
 import { withProviderCircuit } from "@/services/resilience/retry";
 import { getMetaPlatformConfig, type MetaPlatformConfig } from "@/services/meta/settings";
+import { logger } from "@/lib/logging/logger";
 
 export const REQUIRED_META_PERMISSIONS = ["pages_show_list", "pages_read_engagement", "pages_manage_metadata", "pages_messaging"] as const;
 export type MetaPermissionStatus = "granted" | "declined" | "expired" | "missing" | "unknown";
 export type MetaPermissionDiagnostic = { permission: string; status: MetaPermissionStatus };
-export type MetaPage = { id: string; name: string; access_token: string };
+/** A discovered Page may not include an inline credential. The credential is server-only. */
+export type MetaPage = { id: string; name: string; access_token?: string; tasks?: string[] };
+export type PublicMetaPage = Pick<MetaPage, "id" | "name">;
+export type BusinessAccessState = true | false | "unknown";
+export type MetaDiagnosticCheck = { status: "PASS" | "FAIL" | "UNKNOWN"; detail?: string };
+export type PageDiscoveryDiagnostics = {
+  rawRowsReturned: number;
+  validPageIdentities: number;
+  displayablePageCount: number;
+  rowsWithPageAccessToken: number;
+};
+
+export type PageAccessDiagnostic = {
+  authenticatedUser: boolean;
+  authenticatedUserProfile: { id: string; name?: string } | null;
+  oauthCallback: boolean;
+  userAccessToken: boolean;
+  permissions: MetaPermissionDiagnostic[];
+  pagesReturned: number;
+  rawRowsReturned: number;
+  validPageIdentities: number;
+  displayablePageCount: number;
+  rowsWithPageAccessToken: number;
+  loginConfigurationConfigured: boolean;
+  graphApiVersion: string;
+  checks: {
+    facebookAuthentication: MetaDiagnosticCheck;
+    oauthCallback: MetaDiagnosticCheck;
+    userAccessToken: MetaDiagnosticCheck;
+    pages_show_list: MetaDiagnosticCheck;
+    pages_read_engagement: MetaDiagnosticCheck;
+    pages_manage_metadata: MetaDiagnosticCheck;
+    pages_messaging: MetaDiagnosticCheck;
+    loginConfiguration: MetaDiagnosticCheck;
+    manageablePages: MetaDiagnosticCheck;
+  };
+  diagnostics: {
+    directManageablePages: number;
+    businessAccessDetected: BusinessAccessState;
+    businessAssetsReturned: number | null;
+    likelyCause: string;
+    recommendedAction: string;
+  };
+  errors: Array<{ operation: string; code?: string | number; subcode?: string | number; type?: string }>;
+};
+
+export type MetaPageAccessResult = { diagnostic: PageAccessDiagnostic; pages: MetaPage[] };
+
+const MAX_PAGE_DISCOVERY_REQUESTS = 10;
 
 export class MetaApiError extends Error {
-  constructor(message: string, readonly details: { code?: string | number; type?: string; subcode?: string | number; operation: string }) {
+  constructor(message: string, readonly details: { code?: string | number; type?: string; subcode?: string | number; operation: string; httpStatus?: number }) {
     super(message);
     this.name = "MetaApiError";
   }
@@ -63,16 +112,21 @@ export async function getMetaOAuthDiagnostics() {
   return { ok: checks.productionRedirect && checks.loginConfigurationId && checks.credentials && constructible, checks, authorizationUrl: constructible ? buildMetaAuthorizationUrl(config, "diagnostic-state").toString() : null };
 }
 
-async function metaJson<T>(url: URL, operation: string, init?: RequestInit): Promise<T> {
+async function metaJsonWithStatus<T>(url: URL, operation: string, init?: RequestInit): Promise<{ body: T; httpStatus: number }> {
   return withProviderCircuit("meta", async () => {
     const response = await fetch(url, { ...init, signal: AbortSignal.timeout(10_000) });
     const body = await response.json().catch(() => ({})) as T & { error?: { message?: string; code?: string | number; type?: string; error_subcode?: string | number } };
     if (!response.ok || body.error) {
       const providerError = body.error;
-      throw new MetaApiError((providerError?.message ?? `Meta request failed (${response.status})`).slice(0, 500), { code: providerError?.code, type: providerError?.type, subcode: providerError?.error_subcode, operation });
+      throw new MetaApiError((providerError?.message ?? `Meta request failed (${response.status})`).slice(0, 500), { code: providerError?.code, type: providerError?.type, subcode: providerError?.error_subcode, operation, httpStatus: response.status });
     }
-    return body;
+    return { body, httpStatus: response.status };
   });
+}
+
+async function metaJson<T>(url: URL, operation: string, init?: RequestInit): Promise<T> {
+  const result = await metaJsonWithStatus<T>(url, operation, init);
+  return result.body;
 }
 
 export async function consumeOAuthState(state: string) {
@@ -115,13 +169,220 @@ export function missingRequiredPermissions(permissions: MetaPermissionDiagnostic
   return permissions.filter((item) => item.status !== "granted");
 }
 
-export async function discoverPages(userAccessToken: string): Promise<MetaPage[]> {
+type GraphPage = { id?: string; name?: string; access_token?: string; tasks?: unknown };
+type PageDiscoveryResponse = { data?: GraphPage[]; paging?: { next?: string } };
+
+function normalizePage(row: GraphPage): MetaPage | null {
+  if (typeof row.id !== "string" || !row.id.trim() || typeof row.name !== "string" || !row.name.trim()) return null;
+  const tasks = Array.isArray(row.tasks) ? row.tasks.filter((task): task is string => typeof task === "string") : undefined;
+  return {
+    id: row.id,
+    name: row.name,
+    ...(typeof row.access_token === "string" && row.access_token ? { access_token: row.access_token } : {}),
+    ...(tasks ? { tasks } : {}),
+  };
+}
+
+function nextMetaPageUrl(next: string | undefined, userAccessToken: string) {
+  if (!next) return null;
+  try {
+    const url = new URL(next);
+    if (url.protocol !== "https:" || url.hostname !== "graph.facebook.com") return null;
+    if (!url.searchParams.has("access_token")) url.searchParams.set("access_token", userAccessToken);
+    return url;
+  } catch {
+    return null;
+  }
+}
+
+async function discoverPageRows(userAccessToken: string): Promise<{ pages: MetaPage[]; diagnostics: PageDiscoveryDiagnostics }> {
   const config = await metaConfig();
   const url = new URL(`https://graph.facebook.com/${config.version}/me/accounts`);
-  url.searchParams.set("fields", "id,name,access_token");
+  url.searchParams.set("fields", "id,name,tasks,access_token");
   url.searchParams.set("access_token", userAccessToken);
-  const result = await metaJson<{ data?: MetaPage[] }>(url, "pages.discovery");
-  return (result.data ?? []).filter((page) => page.id && page.name && page.access_token).map((page) => ({ id: page.id, name: page.name, access_token: page.access_token }));
+  const rows: GraphPage[] = [];
+  let next: URL | null = url;
+  let requests = 0;
+
+  while (next && requests < MAX_PAGE_DISCOVERY_REQUESTS) {
+    const response = await metaJsonWithStatus<PageDiscoveryResponse>(next, "pages.discovery");
+    const pageRows = Array.isArray(response.body.data) ? response.body.data : [];
+    rows.push(...pageRows);
+    logger.info({
+      operation: "pages.discovery",
+      httpStatus: response.httpStatus,
+      dataRows: pageRows.length,
+      pageIds: pageRows.map((row) => row.id ?? null),
+      pageNames: pageRows.map((row) => row.name ?? null),
+      tasks: pageRows.map((row) => Array.isArray(row.tasks) ? row.tasks.filter((task): task is string => typeof task === "string") : []),
+      rowsWithPageAccessToken: pageRows.filter((row) => typeof row.access_token === "string" && row.access_token.length > 0).length,
+      pageRows: pageRows.map((row) => ({ pageId: row.id ?? null, pageName: row.name ?? null, hasAccessToken: typeof row.access_token === "string" && row.access_token.length > 0 })),
+      paginationRequest: requests + 1,
+    }, "Meta Page discovery response");
+    requests += 1;
+    next = nextMetaPageUrl(response.body.paging?.next, userAccessToken);
+  }
+
+  const validRows = rows.map(normalizePage).filter((page): page is MetaPage => page !== null);
+  const pagesById = new Map<string, MetaPage>();
+  for (const page of validRows) {
+    const current = pagesById.get(page.id);
+    if (!current || (!current.access_token && page.access_token)) pagesById.set(page.id, page);
+  }
+  const pages = [...pagesById.values()];
+  const diagnostics = {
+    rawRowsReturned: rows.length,
+    validPageIdentities: validRows.length,
+    displayablePageCount: pages.length,
+    rowsWithPageAccessToken: rows.filter((row) => typeof row.access_token === "string" && row.access_token.length > 0).length,
+  } satisfies PageDiscoveryDiagnostics;
+  logger.info({ operation: "pages.discovery.summary", ...diagnostics, paginationRequests: requests, paginationTruncated: Boolean(next) }, "Meta Page discovery summary");
+  return { pages, diagnostics };
+}
+
+export async function discoverPages(userAccessToken: string): Promise<MetaPage[]> {
+  return (await discoverPageRows(userAccessToken)).pages;
+}
+
+export function pageDiscoveryStatus(diagnostics: PageDiscoveryDiagnostics): "NO_PAGES" | "PAGE_FOUND_TOKEN_PENDING" | "PAGES_AVAILABLE" {
+  if (diagnostics.displayablePageCount === 0) return "NO_PAGES";
+  if (diagnostics.rowsWithPageAccessToken === 0) return "PAGE_FOUND_TOKEN_PENDING";
+  return "PAGES_AVAILABLE";
+}
+
+export async function resolvePageAccessToken(userAccessToken: string, page: MetaPage) {
+  if (page.access_token) return page.access_token;
+  const config = await metaConfig();
+  const url = new URL(`https://graph.facebook.com/${config.version}/${encodeURIComponent(page.id)}`);
+  url.searchParams.set("fields", "id,access_token");
+  url.searchParams.set("access_token", userAccessToken);
+  const result = await metaJson<{ id?: string; access_token?: string }>(url, "page.access_token");
+  if (result.id && result.id !== page.id) throw new MetaApiError("Meta returned a different Page identity while resolving the Page credential.", { operation: "page.access_token" });
+  if (!result.access_token) throw new MetaApiError("Meta did not return a usable Page access credential.", { operation: "page.access_token" });
+  return result.access_token;
+}
+
+type GraphUser = { id?: string; name?: string };
+type GraphBusiness = { id?: string; name?: string };
+type GraphAsset = { id?: string; name?: string };
+
+function diagnosticError(error: unknown) {
+  if (error instanceof MetaApiError) return { operation: error.details.operation, code: error.details.code, subcode: error.details.subcode, type: error.details.type };
+  return { operation: "meta.diagnostic" };
+}
+
+function permissionCheck(permissions: MetaPermissionDiagnostic[], permission: string): MetaDiagnosticCheck {
+  const found = permissions.find((item) => item.permission === permission);
+  if (!found || found.status === "missing" || found.status === "declined" || found.status === "expired") return { status: "FAIL", detail: found?.status ?? "missing" };
+  if (found.status !== "granted") return { status: "UNKNOWN", detail: found.status };
+  return { status: "PASS" };
+}
+
+function likelyCauseForEmptyPages(input: { permissions: MetaPermissionDiagnostic[]; loginConfigurationConfigured: boolean; businessAccessDetected: BusinessAccessState; businessAssetsReturned: number | null }) {
+  const missing = missingRequiredPermissions(input.permissions);
+  if (missing.length > 0) return {
+    likelyCause: "Required Page permissions were not actually granted to this login.",
+    recommendedAction: `Reconnect Facebook and grant: ${missing.map((item) => item.permission).join(", ")}.`,
+  };
+  if (!input.loginConfigurationConfigured) return {
+    likelyCause: "The Facebook Login for Business Login Configuration ID is missing.",
+    recommendedAction: "Set the correct Login Configuration ID in Meta Platform settings, then reconnect Facebook.",
+  };
+  if (input.businessAccessDetected === true && (input.businessAssetsReturned ?? 0) > 0) return {
+    likelyCause: "This user has Business Portfolio asset access, but no directly manageable Page was exposed by this login.",
+    recommendedAction: "In Meta Business Settings, grant this user Page access with messaging/management permissions and verify the Page is included in the Login for Business configuration.",
+  };
+  if (input.businessAccessDetected === true) return {
+    likelyCause: "Business Portfolio access was detected, but Meta returned no Page assets usable for this login.",
+    recommendedAction: "Verify Page access in Business Settings and verify the Login for Business configuration includes the Page asset.",
+  };
+  if (input.businessAccessDetected === false) return {
+    likelyCause: "The Facebook user has no directly manageable Pages visible to this login.",
+    recommendedAction: "Log in as a user with direct Page access, or grant this user access to the Page in Meta Business Settings, then reconnect.",
+  };
+  return {
+    likelyCause: "Meta returned an unexpected empty Page asset set; Business Portfolio access could not be confirmed.",
+    recommendedAction: "Verify the Login Configuration ID and included Page assets, then grant direct Page access and run the diagnostic again.",
+  };
+}
+
+/**
+ * Runs the live Page access probe. The returned `pages` value is intentionally
+ * server-only; route handlers must map it to PublicMetaPage before responding.
+ */
+export async function runPageAccessDiagnostic(userAccessToken: string, options: { oauthCallback?: boolean } = {}): Promise<MetaPageAccessResult> {
+  const config = await metaConfig();
+  const errors: PageAccessDiagnostic["errors"] = [];
+  const user = await metaJson<GraphUser>(new URL(`https://graph.facebook.com/${config.version}/me?fields=id,name&access_token=${encodeURIComponent(userAccessToken)}`), "oauth.user");
+  if (!user.id) throw new MetaApiError("Meta did not return an authenticated user identity.", { operation: "oauth.user" });
+
+  const permissions = await getGrantedPermissions(userAccessToken);
+  const pageDiscovery = await discoverPageRows(userAccessToken);
+  const { pages } = pageDiscovery;
+
+  let businessAccessDetected: BusinessAccessState = "unknown";
+  let businessAssetsReturned: number | null = null;
+  try {
+    const businessesUrl = new URL(`https://graph.facebook.com/${config.version}/me/businesses`);
+    businessesUrl.searchParams.set("fields", "id,name");
+    businessesUrl.searchParams.set("access_token", userAccessToken);
+    const businesses = await metaJson<{ data?: GraphBusiness[] }>(businessesUrl, "businesses.discovery");
+    const validBusinesses = (businesses.data ?? []).filter((business) => business.id);
+    businessAccessDetected = validBusinesses.length > 0;
+    const assets = new Map<string, GraphAsset>();
+    for (const business of validBusinesses) {
+      for (const edge of ["owned_pages", "client_pages"] as const) {
+        try {
+          const assetsUrl = new URL(`https://graph.facebook.com/${config.version}/${business.id}/${edge}`);
+          assetsUrl.searchParams.set("fields", "id,name");
+          assetsUrl.searchParams.set("access_token", userAccessToken);
+          const result = await metaJson<{ data?: GraphAsset[] }>(assetsUrl, `businesses.${edge}`);
+          for (const asset of result.data ?? []) if (asset.id) assets.set(asset.id, asset);
+        } catch (error) {
+          errors.push(diagnosticError(error));
+        }
+      }
+    }
+    businessAssetsReturned = assets.size;
+  } catch (error) {
+    errors.push(diagnosticError(error));
+  }
+
+  const loginConfigurationConfigured = Boolean(config.loginConfigurationId);
+  const emptyCause = likelyCauseForEmptyPages({ permissions, loginConfigurationConfigured, businessAccessDetected, businessAssetsReturned });
+  const checks = {
+    facebookAuthentication: { status: "PASS" as const },
+    oauthCallback: { status: options.oauthCallback === false ? "UNKNOWN" as const : "PASS" as const },
+    userAccessToken: { status: "PASS" as const },
+    pages_show_list: permissionCheck(permissions, "pages_show_list"),
+    pages_read_engagement: permissionCheck(permissions, "pages_read_engagement"),
+    pages_manage_metadata: permissionCheck(permissions, "pages_manage_metadata"),
+    pages_messaging: permissionCheck(permissions, "pages_messaging"),
+    loginConfiguration: loginConfigurationConfigured ? { status: "PASS" as const } : { status: "FAIL" as const, detail: "not configured" },
+    manageablePages: pages.length > 0 ? { status: "PASS" as const } : { status: "FAIL" as const, detail: "Meta returned zero Page identities" },
+  };
+  return {
+    pages,
+    diagnostic: {
+      authenticatedUser: true,
+      authenticatedUserProfile: { id: user.id, ...(user.name ? { name: user.name } : {}) },
+      oauthCallback: options.oauthCallback !== false,
+      userAccessToken: true,
+      permissions,
+      pagesReturned: pageDiscovery.diagnostics.rawRowsReturned,
+      ...pageDiscovery.diagnostics,
+      loginConfigurationConfigured,
+      graphApiVersion: config.version,
+      checks,
+      diagnostics: {
+        directManageablePages: pageDiscovery.diagnostics.displayablePageCount,
+        businessAccessDetected,
+        businessAssetsReturned,
+        ...(pages.length === 0 ? emptyCause : { likelyCause: pageDiscovery.diagnostics.rowsWithPageAccessToken === 0 ? "Meta returned Page identities without inline Page credentials; credential resolution will run after Page selection." : "Meta returned Page identities.", recommendedAction: "Select and verify a Page to continue." }),
+      },
+      errors,
+    },
+  };
 }
 
 export async function connectMetaPage(input: { pageId: string; metaPageId: string; name: string; pageAccessToken: string }) {

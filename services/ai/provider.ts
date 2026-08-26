@@ -19,10 +19,10 @@ export interface AiProvider { readonly name: string; readonly model: string; com
 export class DeepSeekProvider implements AiProvider {
   readonly name = "deepseek";
   readonly model: string;
-  constructor(private readonly apiKey: string, private readonly baseUrl = "https://api.deepseek.com", model = "deepseek-v4-flash") { this.model = normalizeModel(model).model; }
+  constructor(private readonly apiKey: string, private readonly baseUrl = "https://api.deepseek.com", model = "deepseek-v4-flash", private readonly pageScope?: string) { this.model = normalizeModel(model).model; }
   async complete(input: { system: string; user: string; callType: AiCallType }) {
     if (!this.apiKey) throw new Error("DeepSeek is not configured");
-    return withProviderCircuit("deepseek", async () => {
+    return withProviderCircuit(this.pageScope ? `deepseek:${this.pageScope}` : "deepseek", async () => {
       const response = await fetch(`${this.baseUrl}/chat/completions`, { method: "POST", headers: { Authorization: `Bearer ${this.apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: this.model, temperature: 0.2, response_format: { type: "json_object" }, messages: [{ role: "system", content: input.system }, { role: "user", content: input.user }] }), signal: AbortSignal.timeout(30_000) });
       const body = await response.json() as { choices?: Array<{ message?: { content?: string } }>; usage?: { prompt_tokens?: number; prompt_cache_hit_tokens?: number; completion_tokens?: number; total_tokens?: number }; id?: string; error?: { message?: string } };
       if (!response.ok || body.error) throw new Error(body.error?.message ?? `DeepSeek request failed (${response.status})`);
@@ -38,7 +38,7 @@ export class DeepSeekProvider implements AiProvider {
 export async function createPageDeepSeekProvider(pageId: string): Promise<DeepSeekProvider> {
   const settings = await prisma.pageAiSettings.findUnique({ where: { pageId }, select: { encryptedApiKey: true, baseUrl: true, model: true } });
   if (!settings?.encryptedApiKey) throw new Error("DeepSeek is not configured for this Page");
-  return new DeepSeekProvider(decryptCredential(settings.encryptedApiKey), settings.baseUrl, settings.model);
+  return new DeepSeekProvider(decryptCredential(settings.encryptedApiKey), settings.baseUrl, settings.model, pageId);
 }
 
 export class StaticAiProvider implements AiProvider {

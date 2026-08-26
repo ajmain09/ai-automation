@@ -1,16 +1,16 @@
 import { prisma } from "@/lib/db/prisma";
 import { isDevPreview } from "@/lib/env";
 import { getPreviewDashboard, getPreviewPage, getPreviewPages, PreviewPage } from "@/services/preview/store";
+import { startOfDhakaMonth } from "@/services/time/timezone";
 
 export async function getDashboardData() {
   if (isDevPreview()) return getPreviewDashboard();
-  const month = new Date();
-  month.setUTCDate(1); month.setUTCHours(0, 0, 0, 0);
+  const month = startOfDhakaMonth();
   const [pages, usage] = await Promise.all([
     prisma.page.findMany({ orderBy: { createdAt: "asc" }, include: { telegramSettings: true } }),
-    prisma.apiUsage.groupBy({ by: ["pageId"], where: { createdAt: { gte: month } }, _count: { _all: true }, _sum: { totalTokens: true, estimatedCost: true } }),
+    prisma.apiUsage.groupBy({ by: ["pageId"], where: { createdAt: { gte: month } }, _count: { _all: true }, _sum: { totalTokens: true, estimatedCost: true, estimatedCostBdt: true } }),
   ]);
-  const usageByPage = new Map(usage.map((row) => [row.pageId, { calls: row._count._all, totalTokens: row._sum.totalTokens ?? 0, estimatedCost: Number(row._sum.estimatedCost ?? 0), estimatedCostBdt: 0 }]));
+  const usageByPage = new Map(usage.map((row) => [row.pageId, { calls: row._count._all, totalTokens: row._sum.totalTokens ?? 0, estimatedCost: Number(row._sum.estimatedCost ?? 0), estimatedCostBdt: Number(row._sum.estimatedCostBdt ?? 0) }]));
   return { pages: pages.map((page) => ({ id: page.id, slug: page.slug, name: page.name, connectionStatus: page.connectionStatus, aiEnabled: page.aiEnabled, telegramStatus: page.telegramSettings?.status ?? "NOT_CONFIGURED", budgetState: "HEALTHY", usage: usageByPage.get(page.id) ?? { calls: 0, totalTokens: 0, estimatedCost: 0, estimatedCostBdt: 0 } })) };
 }
 

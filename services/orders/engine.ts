@@ -51,7 +51,7 @@ export function requiredDraftFields(requiredFields: string[]) {
   return requiredFields.filter((field) => ["name", "phone", "address", "product", "variant", "quantity"].includes(field));
 }
 
-export function validateOrderDraft(draftInput: unknown, requiredFields: string[], product?: ProductTruth | null, currentConfigurationVersion?: number, countryCode = "US") {
+export function validateOrderDraft(draftInput: unknown, requiredFields: string[], product?: ProductTruth | null, currentConfigurationVersion?: number, countryCode = "BD") {
   const draft = orderDraftSchema.parse(draftInput);
   const missing: string[] = [];
   const checks: Record<string, boolean> = {
@@ -69,7 +69,7 @@ export function validateOrderDraft(draftInput: unknown, requiredFields: string[]
 }
 
 export function isClearConfirmation(text: string) {
-  return /^(yes|y|confirm|confirmed|order\s*(korbo|koren|den)|নিশ্চিত|হ্যাঁ)[.!\s]*$/iu.test(text.trim());
+  return /^(yes|y|confirm|confirmed|order\s*(korbo|koren|den)|ji\s*(kore\s*den|koren|den)|hya\s*(nibo|ney)|thik\s*ache\s*(nibo|koren)?|\u09a8\u09bf\u09b6\u09cd\u099a\u09bf\u09a4|\u09b9\u09cd\u09af\u09be)[.!\s]*$/iu.test(text.trim());
 }
 
 export function isAmbiguousConfirmation(text: string) {

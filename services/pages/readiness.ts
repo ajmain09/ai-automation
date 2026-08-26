@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db/prisma";
 import { isDevPreview } from "@/lib/env";
 import { getPreviewAiSettings, getPreviewPage, setPreviewLive } from "@/services/preview/store";
 import { resolvePageId } from "@/services/pages/queries";
+import { publishLatestDraft } from "@/services/configuration/service";
 
 export type ReadinessCheck = { key: string; label: string; ok: boolean; detail: string };
 export type PageReadiness = { ready: boolean; checks: ReadinessCheck[] };
@@ -52,10 +53,13 @@ export async function setPageLive(pageId: string, adminId: string) {
     if (!readiness.ready) throw new Error(`Page is not ready: ${readiness.checks.filter((check) => !check.ok).map((check) => check.key).join(", ")}`);
     return setPreviewLive(pageId);
   }
-  const readiness = await checkPageReadiness(pageId);
+  const resolvedBeforePublish = await resolvePageId(pageId);
+  if (!resolvedBeforePublish) throw new Error("Page not found");
+  const draft = await prisma.configurationVersion.findFirst({ where: { pageId: resolvedBeforePublish, status: "DRAFT" }, select: { id: true } });
+  if (draft) await publishLatestDraft(resolvedBeforePublish, adminId);
+  const readiness = await checkPageReadiness(resolvedBeforePublish);
   if (!readiness.ready) throw new Error(`Page is not ready: ${readiness.checks.filter((check) => !check.ok).map((check) => check.key).join(", ")}`);
-  const resolvedPageId = await resolvePageId(pageId);
-  if (!resolvedPageId) throw new Error("Page not found");
+  const resolvedPageId = resolvedBeforePublish;
   return prisma.$transaction(async (tx) => {
     const page = await tx.page.update({ where: { id: resolvedPageId }, data: { lifecycleStatus: "LIVE", readinessCheckedAt: new Date() } });
     await tx.auditLog.create({ data: { adminId, pageId: resolvedPageId, action: "page.went_live" } });

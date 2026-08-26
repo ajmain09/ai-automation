@@ -9,7 +9,7 @@ async function main() {
   if (!password || (process.env.NODE_ENV === "production" && password === "change-this-before-running-in-production")) throw new Error("ADMIN_PASSWORD must be explicitly configured; default production passwords are forbidden");
   const passwordHash = await argon2.hash(password, { type: argon2.argon2id });
   const admin = await prisma.$transaction(async (tx) => {
-    await tx.$queryRaw`SELECT pg_advisory_xact_lock(748319041)`;
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(748319041)`;
     const existing = await tx.admin.findFirst({ orderBy: { createdAt: "asc" } });
     if (existing) return existing;
     return tx.admin.create({ data: { email, passwordHash } });

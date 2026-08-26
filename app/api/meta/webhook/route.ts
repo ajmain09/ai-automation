@@ -29,6 +29,6 @@ export async function POST(request: Request) {
     return NextResponse.json(result, { status: 200 });
   } catch {
     const requestId = crypto.randomUUID();
-    return NextResponse.json({ error: "Webhook accepted for retry.", requestId }, { status: 202 });
+    return NextResponse.json({ error: "Webhook could not be durably recorded; Meta should retry.", requestId }, { status: 500 });
   }
 }

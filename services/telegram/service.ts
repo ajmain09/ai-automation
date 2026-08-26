@@ -7,8 +7,9 @@ export type TelegramNotificationSettings = { newOrderEnabled: boolean; updatedOr
 export type TelegramClient = { sendMessage(destination: TelegramDestination, text: string): Promise<{ messageId?: string }> };
 
 export class TelegramBotApi implements TelegramClient {
+  constructor(private readonly pageScope?: string) {}
   async sendMessage(destination: TelegramDestination, text: string) {
-    return withProviderCircuit("telegram", async () => {
+    return withProviderCircuit(this.pageScope ? `telegram:${this.pageScope}` : "telegram", async () => {
       const response = await fetch(`https://api.telegram.org/bot${encodeURIComponent(destination.botToken)}/sendMessage`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: destination.chatId, text }), signal: AbortSignal.timeout(10_000) });
       const body = await response.json() as { ok?: boolean; result?: { message_id?: number }; description?: string };
       if (!response.ok || !body.ok) throw new Error(body.description ?? `Telegram request failed (${response.status})`);
@@ -53,6 +54,20 @@ export async function setPageTelegramDestination(input: { pageId: string; botTok
     return settings;
   });
   return result;
+}
+
+export async function testPageTelegramDestination(input: { pageId: string; botToken: string; chatId: string; newOrderEnabled: boolean; updatedOrderEnabled: boolean; cancelledOrderEnabled: boolean }, adminId: string) {
+  try {
+    const result = await new TelegramBotApi(input.pageId).sendMessage({ botToken: input.botToken, chatId: input.chatId }, "Growthifyx AI Sales Telegram test");
+    await prisma.$transaction(async (tx) => {
+      await tx.pageTelegramSettings.upsert({ where: { pageId: input.pageId }, update: { encryptedBotToken: encryptCredential(input.botToken), chatId: input.chatId, newOrderEnabled: input.newOrderEnabled, updatedOrderEnabled: input.updatedOrderEnabled, cancelledOrderEnabled: input.cancelledOrderEnabled, status: "CONNECTED", lastTestAt: new Date(), lastError: null }, create: { pageId: input.pageId, encryptedBotToken: encryptCredential(input.botToken), chatId: input.chatId, newOrderEnabled: input.newOrderEnabled, updatedOrderEnabled: input.updatedOrderEnabled, cancelledOrderEnabled: input.cancelledOrderEnabled, status: "CONNECTED", lastTestAt: new Date() } });
+      await tx.auditLog.create({ data: { adminId, pageId: input.pageId, action: "telegram.connection_tested", metadata: { providerMessageId: result.messageId ?? null } } });
+    });
+    return { ok: true, messageId: result.messageId };
+  } catch {
+    await prisma.pageTelegramSettings.updateMany({ where: { pageId: input.pageId }, data: { status: "ERROR", lastTestAt: new Date(), lastError: "Telegram rejected the test message." } });
+    return { ok: false, error: "Telegram rejected the test message. Check the Page bot token and chat ID." };
+  }
 }
 
 export function classifyTelegramFailure(error: unknown) { return classifyFailure(error); }

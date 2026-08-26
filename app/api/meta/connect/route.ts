@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/auth/session";
 import { decryptCredential } from "@/lib/encryption/service";
-import { connectMetaPage, discoverPages, getGrantedPermissions, healthCheckMetaPage, MetaApiError, missingRequiredPermissions } from "@/services/meta/service";
+import { connectMetaPage, discoverPages, getGrantedPermissions, healthCheckMetaPage, MetaApiError, missingRequiredPermissions, resolvePageAccessToken } from "@/services/meta/service";
 import { prisma } from "@/lib/db/prisma";
 import { z } from "zod";
 import { isSameOrigin } from "@/lib/auth/csrf";
@@ -28,6 +28,14 @@ export async function POST(request: Request) {
     if (missing.length > 0) return NextResponse.json({ status: "PERMISSION_MISSING", permissions, error: "Required Facebook permissions are missing." }, { status: 403 });
     const candidate = (await discoverPages(userToken)).find((page) => page.id === parsed.data.metaPageId);
     if (!candidate) return NextResponse.json({ status: "NO_PAGES", error: "That Page is not available to this Facebook account." }, { status: 403 });
+    let pageAccessToken: string;
+    try {
+      pageAccessToken = await resolvePageAccessToken(userToken, candidate);
+    } catch (error) {
+      const details = error instanceof MetaApiError ? error.details : { operation: "page.access_token" };
+      logger.warn({ operation: details.operation, metaPageId: candidate.id, metaErrorCode: details.code, metaErrorType: details.type, metaErrorSubcode: details.subcode }, "Meta Page credential resolution failed");
+      return NextResponse.json({ status: "PAGE_CREDENTIAL_ERROR", error: "Page discovered successfully, but a Page access credential could not be obtained." }, { status: 502 });
+    }
     const existing = await prisma.page.findUnique({ where: { metaPageId: candidate.id }, select: { id: true, slug: true, name: true } });
     if (existing && !parsed.data.refresh) return NextResponse.json({ status: "DUPLICATE", message: "Page already connected", pageId: existing.id, slug: existing.slug, pageName: existing.name, manageUrl: `/pages/${existing.slug}` }, { status: 409 });
     let pageId = existing?.id ?? parsed.data.pageId;
@@ -36,7 +44,7 @@ export async function POST(request: Request) {
       const page = await prisma.page.create({ data: { name: candidate.name, slug, settings: { create: { requiredOrderFields: ["name", "phone", "address", "product", "variant", "quantity"] } }, configurationVersions: { create: { version: 1, status: "DRAFT", label: "Initial draft" } }, connection: { create: { status: "PENDING" } } } });
       pageId = page.id;
     }
-    await connectMetaPage({ pageId, metaPageId: candidate.id, name: candidate.name, pageAccessToken: candidate.access_token });
+    await connectMetaPage({ pageId, metaPageId: candidate.id, name: candidate.name, pageAccessToken });
     try { await healthCheckMetaPage(pageId); } catch { return NextResponse.json({ status: "META_ERROR", error: "Meta health verification or webhook subscription failed. The Page was not marked connected." }, { status: 502 }); }
     const { finalizeOAuthState } = await import("@/services/meta/service");
     await finalizeOAuthState(parsed.data.state);

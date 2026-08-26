@@ -26,8 +26,8 @@ export async function reservePageBudgetAtomic(pageId: string, estimatedBdt: numb
       UPDATE "PageCostSettings" AS budget
       SET "reservedBdt" = "reservedBdt" + ${estimate}
       WHERE budget."pageId" = ${pageId}::uuid
-        AND (budget."hardLimit" = false OR budget."monthlyBudgetBdt" IS NULL OR (COALESCE((SELECT SUM(COALESCE(u."estimatedCostBdt", 0)) FROM "ApiUsage" u WHERE u."pageId" = budget."pageId" AND u."createdAt" >= date_trunc('month', CURRENT_TIMESTAMP)), 0) + budget."reservedBdt" + ${estimate} <= budget."monthlyBudgetBdt"))
-        AND (budget."hardLimit" = false OR budget."dailyBudgetBdt" IS NULL OR (COALESCE((SELECT SUM(COALESCE(u."estimatedCostBdt", 0)) FROM "ApiUsage" u WHERE u."pageId" = budget."pageId" AND u."createdAt" >= date_trunc('day', CURRENT_TIMESTAMP)), 0) + budget."reservedBdt" + ${estimate} <= budget."dailyBudgetBdt"))
+        AND (budget."hardLimit" = false OR budget."monthlyBudgetBdt" IS NULL OR (COALESCE((SELECT SUM(COALESCE(u."estimatedCostBdt", 0)) FROM "ApiUsage" u WHERE u."pageId" = budget."pageId" AND u."createdAt" >= date_trunc('month', CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Dhaka') AT TIME ZONE 'Asia/Dhaka'), 0) + budget."reservedBdt" + ${estimate} <= budget."monthlyBudgetBdt"))
+        AND (budget."hardLimit" = false OR budget."dailyBudgetBdt" IS NULL OR (COALESCE((SELECT SUM(COALESCE(u."estimatedCostBdt", 0)) FROM "ApiUsage" u WHERE u."pageId" = budget."pageId" AND u."createdAt" >= date_trunc('day', CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Dhaka') AT TIME ZONE 'Asia/Dhaka'), 0) + budget."reservedBdt" + ${estimate} <= budget."dailyBudgetBdt"))
     `);
     if (result !== 1) return 0;
     if (reservationKey) await tx.aiBudgetReservation.create({ data: { pageId, reservationKey, estimatedBdt: estimate, expiresAt: new Date(Date.now() + ttlMs) } });
@@ -36,6 +36,7 @@ export async function reservePageBudgetAtomic(pageId: string, estimatedBdt: numb
   if (changed === 1) return { allowed: true, reservedBdt: estimate, reservationKey };
   await prisma.$transaction(async (tx) => {
     await tx.page.update({ where: { id: pageId }, data: { aiEnabled: false, aiStatus: "PAUSED_BY_BUDGET" } });
+    await tx.pageCostSettings.update({ where: { pageId }, data: { pausedByBudget: true } });
     const existing = await tx.issue.findFirst({ where: { pageId, type: "PAGE_BUDGET_LIMIT", status: { in: ["OPEN", "ACKNOWLEDGED"] } }, select: { id: true } });
     if (!existing) await tx.issue.create({ data: { pageId, type: "PAGE_BUDGET_LIMIT", severity: "high", title: "AI paused by Page budget", description: "This Page reached its hard AI budget. Incoming Messenger messages continue to be received and stored.", resolutionAction: "Increase this Page budget or resume AI after reviewing usage." } });
   }).catch(() => undefined);

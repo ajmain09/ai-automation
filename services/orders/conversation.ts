@@ -4,7 +4,7 @@ import { isClearConfirmation } from "@/services/orders/engine";
 import { confirmDraft, cancelConfirmedOrder, updateDraft } from "@/services/orders/service";
 
 export async function applyOrderSignal(input: { pageId: string; customerId: string; text: string; result: AiResponse; requiredFields: string[]; currency: string; countryCode: string; configurationVersion?: number }) {
-  const cancellation = /^(cancel|cancel\s*order|no\s*longer\s*need|বাতিল)[.!\s]*$/iu.test(input.text.trim());
+  const cancellation = /^(cancel|cancel\s*order|cancel\s*kore\s*den|order\s*ta\s*bad\s*den|no\s*longer\s*need|lagbe\s*na|\u09ac\u09be\u09a4\u09bf\u09b2)[.!\s]*$/iu.test(input.text.trim());
   const completed = await prisma.orderSession.findFirst({ where: { pageId: input.pageId, customerId: input.customerId, status: "COMPLETED", orderId: { not: null } }, orderBy: { updatedAt: "desc" } });
   if (cancellation && completed?.orderId) {
     await cancelConfirmedOrder({ pageId: input.pageId, orderId: completed.orderId });

@@ -170,8 +170,8 @@ model PageConnection {
 model PageSettings {
   id                  String   @id @default(uuid()) @db.Uuid
   pageId              String   @unique @db.Uuid
-  currency            String   @default("USD")
-  countryCode         String   @default("US")
+  currency            String   @default("BDT")
+  countryCode         String   @default("BD")
   defaultLanguage     String   @default("en")
   tone                String   @default("helpful")
   requiredOrderFields Json
@@ -181,40 +181,41 @@ model PageSettings {
 }
 
 model PageAiSettings {
-  id                        String    @id @default(uuid()) @db.Uuid
-  pageId                    String    @unique @db.Uuid
-  language                  String    @default("auto")
-  tone                      String    @default("natural_sales")
-  replyLength               String    @default("short")
-  provider                  String    @default("deepseek")
-  encryptedApiKey           String?
-  baseUrl                   String    @default("https://api.deepseek.com")
-  model                     String    @default("deepseek-v4-flash")
-  thinkingOverride          String?
-  maxOutputTokens           Int?
-  understandBeforeRecommend Boolean   @default(true)
-  suggestCombo              Boolean   @default(true)
-  askOneQuestionAtATime     Boolean   @default(true)
-  mirrorCustomerLanguage    Boolean   @default(true)
-  customerMemory            Boolean   @default(true)
-  recentMessageContext      Int       @default(12)
-  rollingSummary            Boolean   @default(true)
-  smartBuffer               Boolean   @default(true)
-  bufferWindowSeconds       Int       @default(8)
-  manualCollisionProtection Boolean   @default(true)
-  manualActivityCooldown    Int       @default(30)
-  customSalesInstructions   String?
-  status                    String    @default("NOT_CONFIGURED")
-  providerBalanceUsd        Decimal?  @db.Decimal(14, 8)
-  providerBalanceCny        Decimal?  @db.Decimal(14, 8)
-  providerBalancePayload    Json?
-  lastBalanceCheckAt        DateTime?
-  lastSuccessfulCallAt      DateTime?
-  lastFailedCallAt          DateTime?
-  lastError                 String?
-  updatedAt                 DateTime  @updatedAt
-  createdAt                 DateTime  @default(now())
-  page                      Page      @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  id                           String    @id @default(uuid()) @db.Uuid
+  pageId                       String    @unique @db.Uuid
+  language                     String    @default("auto")
+  tone                         String    @default("natural_sales")
+  replyLength                  String    @default("short")
+  provider                     String    @default("deepseek")
+  encryptedApiKey              String?
+  baseUrl                      String    @default("https://api.deepseek.com")
+  model                        String    @default("deepseek-v4-flash")
+  thinkingOverride             String?
+  maxOutputTokens              Int?
+  understandBeforeRecommend    Boolean   @default(true)
+  maxProductsPerRecommendation Int       @default(1)
+  suggestCombo                 Boolean   @default(true)
+  askOneQuestionAtATime        Boolean   @default(true)
+  mirrorCustomerLanguage       Boolean   @default(true)
+  customerMemory               Boolean   @default(true)
+  recentMessageContext         Int       @default(12)
+  rollingSummary               Boolean   @default(true)
+  smartBuffer                  Boolean   @default(true)
+  bufferWindowSeconds          Int       @default(8)
+  manualCollisionProtection    Boolean   @default(true)
+  manualActivityCooldown       Int       @default(30)
+  customSalesInstructions      String?
+  status                       String    @default("NOT_CONFIGURED")
+  providerBalanceUsd           Decimal?  @db.Decimal(14, 8)
+  providerBalanceCny           Decimal?  @db.Decimal(14, 8)
+  providerBalancePayload       Json?
+  lastBalanceCheckAt           DateTime?
+  lastSuccessfulCallAt         DateTime?
+  lastFailedCallAt             DateTime?
+  lastError                    String?
+  updatedAt                    DateTime  @updatedAt
+  createdAt                    DateTime  @default(now())
+  page                         Page      @relation(fields: [pageId], references: [id], onDelete: Cascade)
 }
 
 model PageTelegramSettings {
@@ -438,15 +439,15 @@ model Conversation {
 }
 
 model OAuthState {
-  id                 String    @id @default(uuid()) @db.Uuid
-  stateHash          String    @unique
-  redirectUri        String
-  encryptedUserToken String?
+  id                    String    @id @default(uuid()) @db.Uuid
+  stateHash             String    @unique
+  redirectUri           String
+  encryptedUserToken    String?
   permissionDiagnostics Json?
-  callbackCompletedAt DateTime?
-  expiresAt          DateTime
-  createdAt          DateTime  @default(now())
-  consumedAt         DateTime?
+  callbackCompletedAt   DateTime?
+  expiresAt             DateTime
+  createdAt             DateTime  @default(now())
+  consumedAt            DateTime?
 }
 
 model Message {
@@ -671,7 +672,7 @@ model MetaPlatformSetting {
   appSecretEncrypted   String?
   verifyTokenEncrypted String?
   graphApiVersion      String    @default("v23.0")
-  loginConfigurationId  String?
+  loginConfigurationId String?
   oauthRedirectUri     String?
   webhookUrl           String?
   status               String    @default("NOT_CONFIGURED")
@@ -708,6 +709,7 @@ model Issue {
   title            String
   description      String?
   resolutionAction String?
+  metadata         Json?
   createdAt        DateTime    @default(now())
   updatedAt        DateTime    @updatedAt
   page             Page?       @relation(fields: [pageId], references: [id], onDelete: SetNull)

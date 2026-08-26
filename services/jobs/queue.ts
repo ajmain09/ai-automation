@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { prisma } from "@/lib/db/prisma";
 import { JobStatus, Prisma } from "@prisma/client";
+import { reconcileExpiredBudgetReservations } from "@/services/usage/budget";
 
 export type QueueJob<T = unknown> = {
   id: string; pageId?: string; conversationId?: string; type: string; payload: T;
@@ -74,7 +75,7 @@ export class PostgresJobQueue implements JobQueue {
       const candidate = await tx.job.findFirst({ where: { status: "PENDING", runAt: { lte: now }, OR: [{ expiresAt: null }, { expiresAt: { gt: now } }], AND: [{ OR: [{ conversationId: null }, { conversationId: { notIn: activeConversationIds } }] }] }, orderBy: { runAt: "asc" } });
       if (!candidate) return null;
       if (candidate.conversationId) {
-        await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${candidate.conversationId}, 0))`;
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${candidate.conversationId}, 0))`;
         const active = await tx.job.count({ where: { conversationId: candidate.conversationId, status: "RUNNING" } });
         if (active > 0) return null;
       }
@@ -97,8 +98,10 @@ export async function enqueuePostgresJobTx<T>(tx: Prisma.TransactionClient, inpu
 
 export async function runWorker(queue: JobQueue, handler: (job: QueueJob) => Promise<void>, options: { signal?: AbortSignal; pollMs?: number; workerId?: string } = {}) {
   const workerId = options.workerId ?? `worker-${crypto.randomUUID()}`;
+  let lastMaintenance = 0;
   while (!options.signal?.aborted) {
     await queue.expire();
+    if (Date.now() - lastMaintenance >= 60_000) { await reconcileExpiredBudgetReservations().catch(() => undefined); lastMaintenance = Date.now(); }
     const job = await queue.claim(workerId);
     if (!job) { await new Promise((resolve) => setTimeout(resolve, options.pollMs ?? 250)); continue; }
     try { await handler(job); await queue.complete(job.id); } catch (error) { await queue.fail(job.id, error instanceof Error ? error.message : "Unknown job failure"); }

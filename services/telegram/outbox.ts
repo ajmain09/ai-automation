@@ -3,7 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { backoffWithJitter, classifyFailure } from "@/services/resilience/retry";
 import { formatOrderEvent, getTelegramDestination, TelegramBotApi, TelegramClient } from "@/services/telegram/service";
 
-export async function processNextTelegramDelivery(client: TelegramClient = new TelegramBotApi()) {
+export async function processNextTelegramDelivery(client?: TelegramClient) {
   const now = new Date();
   await prisma.deliveryOutbox.updateMany({ where: { status: "SENDING", leaseUntil: { lt: now } }, data: { status: "DEAD_LETTER", leaseUntil: null, lastError: "Delivery lease expired; manual review required before retry." } });
   const candidate = await prisma.deliveryOutbox.findFirst({ where: { status: { in: ["PENDING", "FAILED_RETRYABLE"] }, nextAttemptAt: { lte: now }, OR: [{ leaseUntil: null }, { leaseUntil: { lt: now } }] }, orderBy: { nextAttemptAt: "asc" } });
@@ -16,7 +16,7 @@ export async function processNextTelegramDelivery(client: TelegramClient = new T
     const destination = await getTelegramDestination(current.pageId);
     if (!destination) throw new Error("Telegram destination is not configured");
     const payload = current.payload as Record<string, unknown>;
-    const result = await client.sendMessage(destination, formatOrderEvent(current.eventType, payload));
+    const result = await (client ?? new TelegramBotApi(current.pageId)).sendMessage(destination, formatOrderEvent(current.eventType, payload));
     return prisma.$transaction(async (tx) => {
       await tx.deliveryAttempt.create({ data: { deliveryOutboxId: current.id, success: true, response: result as Prisma.InputJsonValue } });
       return tx.deliveryOutbox.update({ where: { id: current.id }, data: { status: "SENT", sentAt: new Date(), leaseUntil: null, lastError: null } });
