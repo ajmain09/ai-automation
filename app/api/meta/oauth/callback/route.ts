@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/auth/session";
-import { consumeOAuthState, exchangeCode } from "@/services/meta/service";
+import { consumeOAuthState, exchangeCode, inspectMetaToken } from "@/services/meta/service";
 import { encryptCredential } from "@/lib/encryption/service";
 import { getEnv, isDevPreview } from "@/lib/env";
 
@@ -14,9 +14,22 @@ export async function GET(request: Request) {
   try {
     const record = await consumeOAuthState(state);
     const token = await exchangeCode(code, record.redirectUri);
+    const tokenDebug = await inspectMetaToken(token.access_token);
     const hash = (await import("node:crypto")).createHash("sha256").update(state).digest("hex");
     const { prisma } = await import("@/lib/db/prisma");
-    await prisma.oAuthState.update({ where: { stateHash: hash }, data: { encryptedUserToken: encryptCredential(token.access_token) } });
+    await prisma.oAuthState.update({
+      where: { stateHash: hash },
+      data: {
+        encryptedUserToken: encryptCredential(token.access_token),
+        permissionDiagnostics: {
+          tokenValidity: tokenDebug.isValid,
+          tokenAppId: tokenDebug.appId,
+          tokenType: tokenDebug.type,
+          scopes: tokenDebug.scopes,
+          granularScopes: tokenDebug.granularScopes,
+        },
+      },
+    });
     return NextResponse.redirect(new URL(`/pages/new?meta_state=${encodeURIComponent(state)}`, getEnv().APP_URL));
   } catch {
     return NextResponse.json({ error: "Facebook connection could not be completed." }, { status: 400 });

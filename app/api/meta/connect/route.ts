@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/auth/session";
 import { decryptCredential } from "@/lib/encryption/service";
-import { connectMetaPage, discoverPages, getGrantedPermissions, healthCheckMetaPage, MetaApiError, missingRequiredPermissions, resolvePageAccessToken } from "@/services/meta/service";
+import { connectMetaPage, healthCheckMetaPage, MetaApiError, missingRequiredPermissions, resolvePageAccessToken, runPageAccessDiagnostic } from "@/services/meta/service";
 import { prisma } from "@/lib/db/prisma";
 import { z } from "zod";
 import { isSameOrigin } from "@/lib/auth/csrf";
@@ -23,10 +23,11 @@ export async function POST(request: Request) {
   if (!state?.encryptedUserToken || state.consumedAt || state.expiresAt < new Date()) return NextResponse.json({ status: "OAUTH_EXPIRED", error: "OAuth session expired. Reconnect Facebook to continue." }, { status: 400 });
   try {
     const userToken = decryptCredential(state.encryptedUserToken);
-    const permissions = await getGrantedPermissions(userToken);
+    const discovery = await runPageAccessDiagnostic(userToken, { oauthCallback: true });
+    const permissions = discovery.diagnostic.permissions;
     const missing = missingRequiredPermissions(permissions);
     if (missing.length > 0) return NextResponse.json({ status: "PERMISSION_MISSING", permissions, error: "Required Facebook permissions are missing." }, { status: 403 });
-    const candidate = (await discoverPages(userToken)).find((page) => page.id === parsed.data.metaPageId);
+    const candidate = discovery.pages.find((page) => page.id === parsed.data.metaPageId);
     if (!candidate) return NextResponse.json({ status: "NO_PAGES", error: "That Page is not available to this Facebook account." }, { status: 403 });
     let pageAccessToken: string;
     try {

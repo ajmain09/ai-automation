@@ -21,7 +21,15 @@ export async function GET(request: Request) {
     const userToken = decryptCredential(record.encryptedUserToken);
      const result = await runPageAccessDiagnostic(userToken, { oauthCallback: true });
      const { diagnostic } = result;
-     await prisma.oAuthState.update({ where: { id: record.id }, data: { permissionDiagnostics: diagnostic.permissions } });
+     await prisma.oAuthState.update({ where: { id: record.id }, data: { permissionDiagnostics: {
+       permissionStatuses: diagnostic.permissions,
+       tokenType: diagnostic.tokenType,
+       tokenValidity: diagnostic.checks.tokenValidity,
+       tokenAppId: diagnostic.checks.tokenAppId,
+       granularTargetIds: diagnostic.diagnostics.granularTargetIds,
+       verifiedGranularPages: diagnostic.diagnostics.verifiedGranularPages,
+       finalMergedPages: diagnostic.diagnostics.finalMergedPages,
+     } } });
      const missing = missingRequiredPermissions(diagnostic.permissions);
      if (missing.length > 0) return NextResponse.json({ pages: [], permissions: diagnostic.permissions, diagnostics: diagnostic, status: "PERMISSION_MISSING", message: "Facebook permissions are required to discover manageable Pages.", state: state.data });
      const status = pageDiscoveryStatus(diagnostic);

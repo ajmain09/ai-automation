@@ -1,15 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { consumeOAuthState, exchangeCode, encryptCredential, oauthStateUpdate, requireAdmin } = vi.hoisted(() => ({
+const { consumeOAuthState, exchangeCode, encryptCredential, inspectMetaToken, oauthStateUpdate, requireAdmin } = vi.hoisted(() => ({
   consumeOAuthState: vi.fn(),
   exchangeCode: vi.fn(),
+  inspectMetaToken: vi.fn(async () => ({ isValid: true, appId: "app-id", type: "USER", userId: "user-id", expiresAt: null, dataAccessExpiresAt: null, scopes: ["pages_show_list"], granularScopes: [] })),
   encryptCredential: vi.fn((value: string) => `encrypted:${value}`),
   oauthStateUpdate: vi.fn(),
   requireAdmin: vi.fn(async () => ({ id: "admin-1" })),
 }));
 
 vi.mock("@/lib/auth/session", () => ({ requireAdmin }));
-vi.mock("@/services/meta/service", () => ({ consumeOAuthState, exchangeCode }));
+vi.mock("@/services/meta/service", () => ({ consumeOAuthState, exchangeCode, inspectMetaToken }));
 vi.mock("@/lib/encryption/service", () => ({ encryptCredential }));
 vi.mock("@/lib/db/prisma", () => ({ prisma: { oAuthState: { update: oauthStateUpdate } } }));
 
@@ -28,6 +29,7 @@ beforeEach(() => {
   delete process.env.PREVIEW_ADMIN_PASSWORD;
   consumeOAuthState.mockReset();
   exchangeCode.mockReset();
+  inspectMetaToken.mockClear();
   encryptCredential.mockClear();
   oauthStateUpdate.mockReset();
   requireAdmin.mockClear();
@@ -78,9 +80,23 @@ describe("Meta OAuth callback redirects", () => {
     await GET(new Request(`http://localhost:3000/api/meta/oauth/callback?state=${state}&code=oauth-code`));
 
     expect(encryptCredential).toHaveBeenCalledWith("user-token");
+    expect(inspectMetaToken).toHaveBeenCalledWith("user-token");
     expect(oauthStateUpdate).toHaveBeenCalledWith(expect.objectContaining({
       where: { stateHash: expect.any(String) },
-      data: { encryptedUserToken: "encrypted:user-token" },
+      data: expect.objectContaining({ encryptedUserToken: "encrypted:user-token", permissionDiagnostics: expect.objectContaining({ tokenType: "USER" }) }),
     }));
+  });
+
+  it("rejects an invalid or wrong-app token before storing any credential", async () => {
+    consumeOAuthState.mockResolvedValue({ redirectUri: "https://ai.growthifyx.space/api/meta/oauth/callback" });
+    exchangeCode.mockResolvedValue({ access_token: "user-token" });
+    inspectMetaToken.mockRejectedValue(new Error("invalid token"));
+
+    const { GET } = await import("@/app/api/meta/oauth/callback/route");
+    const response = await GET(new Request("http://localhost:3000/api/meta/oauth/callback?state=state-invalid-token&code=oauth-code"));
+
+    expect(response.status).toBe(400);
+    expect(encryptCredential).not.toHaveBeenCalled();
+    expect(oauthStateUpdate).not.toHaveBeenCalled();
   });
 });
