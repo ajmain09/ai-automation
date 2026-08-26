@@ -79,6 +79,12 @@ services:
       APP_URL: ${APP_URL:?Set APP_URL in .env}
       NODE_ENV: ${NODE_ENV:-production}
       DEV_PREVIEW: ${DEV_PREVIEW:-false}
+      META_APP_ID: ${META_APP_ID:-}
+      META_APP_SECRET: ${META_APP_SECRET:-}
+      META_REDIRECT_URI: ${META_REDIRECT_URI:-https://ai.growthifyx.space/api/meta/oauth/callback}
+      META_GRAPH_VERSION: ${META_GRAPH_VERSION:-v23.0}
+      META_VERIFY_TOKEN: ${META_VERIFY_TOKEN:-}
+      META_WEBHOOK_URL: ${META_WEBHOOK_URL:-https://ai.growthifyx.space/api/meta/webhook}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       TZ: ${TZ:-Asia/Dhaka}
     depends_on:
