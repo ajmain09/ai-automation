@@ -10,8 +10,11 @@ export const BUSINESS_MANAGEMENT_PERMISSION = "business_management" as const;
 export const REQUIRED_META_PERMISSIONS = [...DIRECT_PAGE_META_PERMISSIONS, BUSINESS_MANAGEMENT_PERMISSION] as const;
 export type MetaPermissionStatus = "granted" | "declined" | "expired" | "missing" | "unknown";
 export type MetaPermissionDiagnostic = { permission: string; status: MetaPermissionStatus };
+type MetaPageSource = "ME_ACCOUNTS" | "ME_ASSIGNED_PAGES" | "BUSINESS_OWNED_PAGES" | "BUSINESS_CLIENT_PAGES" | "BUSINESS_ASSIGNED_PAGES" | "GRANULAR_TARGET";
+type MetaPageSourceMetadata = { source: MetaPageSource; businessId?: string };
 /** A discovered Page may not include an inline credential. The credential is server-only. */
 export type MetaPage = { id: string; name: string; access_token?: string; tasks?: string[] };
+type InternalMetaPage = MetaPage & { source?: MetaPageSource; businessId?: string; sources?: MetaPageSourceMetadata[] };
 export type PublicMetaPage = Pick<MetaPage, "id" | "name">;
 export type BusinessAccessState = true | false | "unknown";
 export type MetaDiagnosticCheck = { status: "PASS" | "FAIL" | "UNKNOWN"; detail?: string };
@@ -22,6 +25,11 @@ export type PageDiscoveryDiagnostics = {
   rowsWithPageAccessToken: number;
   meAccountsPageCount?: number;
   assignedPagesPageCount?: number;
+  meAccountsRequests?: number;
+  assignedPagesRequests?: number;
+  businessesRequests?: number;
+  businessPageEdgeRequests?: number;
+  paginationTruncated?: boolean;
   granularTargetIds?: number;
   granularPageTargets?: number;
   businessAssetTargets?: number;
@@ -101,7 +109,7 @@ export type PageAccessDiagnostic = {
 
 export type MetaPageAccessResult = { diagnostic: PageAccessDiagnostic; pages: MetaPage[] };
 
-const MAX_PAGE_DISCOVERY_REQUESTS = 10;
+const MAX_PAGE_DISCOVERY_REQUESTS = 20;
 
 export class MetaApiError extends Error {
   constructor(message: string, readonly details: { code?: string | number; type?: string; subcode?: string | number; operation: string; httpStatus?: number }) {
@@ -179,6 +187,18 @@ async function metaJson<T>(url: URL, operation: string, init?: RequestInit): Pro
   return result.body;
 }
 
+function withBearerToken(accessToken: string, init: RequestInit = {}): RequestInit {
+  const headers = new Headers(init.headers);
+  headers.set("Authorization", `Bearer ${accessToken}`);
+  return { ...init, headers };
+}
+
+function formRequest(values: Record<string, string>, init: RequestInit = {}): RequestInit {
+  const headers = new Headers(init.headers);
+  headers.set("Content-Type", "application/x-www-form-urlencoded");
+  return { ...init, method: "POST", headers, body: new URLSearchParams(values).toString() };
+}
+
 const GRANULAR_PAGE_PERMISSIONS = new Set<string>(REQUIRED_META_PERMISSIONS);
 
 function normalizeGranularScopes(value: unknown): GranularScopeDiagnostic[] {
@@ -200,10 +220,11 @@ function normalizeGranularScopes(value: unknown): GranularScopeDiagnostic[] {
 export async function inspectMetaToken(userAccessToken: string): Promise<MetaTokenDebug> {
   const config = await metaConfig();
   const url = new URL(`https://graph.facebook.com/${config.version}/debug_token`);
-  url.searchParams.set("input_token", userAccessToken);
-  url.searchParams.set("access_token", `${config.appId}|${config.appSecret}`);
-  url.searchParams.set("fields", "is_valid,app_id,type,user_id,expires_at,data_access_expires_at,scopes,granular_scopes");
-  const response = await metaJson<{ data?: { is_valid?: unknown; app_id?: unknown; type?: unknown; user_id?: unknown; expires_at?: unknown; data_access_expires_at?: unknown; scopes?: unknown; granular_scopes?: unknown } }>(url, "oauth.debug_token");
+  const response = await metaJson<{ data?: { is_valid?: unknown; app_id?: unknown; type?: unknown; user_id?: unknown; expires_at?: unknown; data_access_expires_at?: unknown; scopes?: unknown; granular_scopes?: unknown } }>(
+    url,
+    "oauth.debug_token",
+    withBearerToken(`${config.appId}|${config.appSecret}`, formRequest({ input_token: userAccessToken, fields: "is_valid,app_id,type,user_id,expires_at,data_access_expires_at,scopes,granular_scopes" })),
+  );
   const data = response.data;
   const debug: MetaTokenDebug = {
     isValid: data?.is_valid === true,
@@ -240,18 +261,13 @@ export async function finalizeOAuthState(state: string) {
 export async function exchangeCode(code: string, redirectUri: string) {
   const config = await metaConfig();
   const url = new URL(`https://graph.facebook.com/${config.version}/oauth/access_token`);
-  url.searchParams.set("client_id", config.appId);
-  url.searchParams.set("client_secret", config.appSecret);
-  url.searchParams.set("redirect_uri", redirectUri);
-  url.searchParams.set("code", code);
-  return metaJson<{ access_token: string }>(url, "oauth.access_token");
+  return metaJson<{ access_token: string }>(url, "oauth.access_token", formRequest({ client_id: config.appId, client_secret: config.appSecret, redirect_uri: redirectUri, code }));
 }
 
 export async function getGrantedPermissions(userAccessToken: string): Promise<MetaPermissionDiagnostic[]> {
   const config = await metaConfig();
   const url = new URL(`https://graph.facebook.com/${config.version}/me/permissions`);
-  url.searchParams.set("access_token", userAccessToken);
-  const result = await metaJson<{ data?: Array<{ permission?: string; status?: string }> }>(url, "oauth.permissions");
+  const result = await metaJson<{ data?: Array<{ permission?: string; status?: string }> }>(url, "oauth.permissions", withBearerToken(userAccessToken));
   const actual = new Map((result.data ?? []).filter((item) => item.permission).map((item) => [item.permission!, item.status?.toLowerCase() as MetaPermissionStatus]));
   return REQUIRED_META_PERMISSIONS.map((permission) => ({ permission, status: actual.get(permission) ?? "missing" }));
 }
@@ -273,16 +289,20 @@ type GranularPageResponse = GraphPage;
 type GraphUser = { id?: string; name?: string };
 type GraphBusiness = { id?: string; name?: string };
 type GraphAsset = GraphPage;
+type PageEdge = "owned_pages" | "client_pages" | "assigned_pages";
+
+type CollectionResult<T> = { rows: T[]; requests: number; paginationTruncated: boolean };
+type DiscoveryCounters = { meAccountsRequests: number; assignedPagesRequests: number; businessesRequests: number; businessPageEdgeRequests: number; paginationTruncated: boolean };
 
 type PageDiscoveryResult = {
-  pages: MetaPage[];
+  pages: InternalMetaPage[];
   diagnostics: PageDiscoveryDiagnostics;
   errors: PageAccessDiagnostic["errors"];
   businessAccessDetected: BusinessAccessState;
   businessAssetsReturned: number | null;
 };
 
-function normalizePage(row: GraphPage): MetaPage | null {
+function normalizePage(row: GraphPage, metadata?: MetaPageSourceMetadata): InternalMetaPage | null {
   if (typeof row.id !== "string" || !row.id.trim() || typeof row.name !== "string" || !row.name.trim()) return null;
   const tasks = Array.isArray(row.tasks) ? row.tasks.filter((task): task is string => typeof task === "string") : undefined;
   return {
@@ -290,29 +310,81 @@ function normalizePage(row: GraphPage): MetaPage | null {
     name: row.name,
     ...(typeof row.access_token === "string" && row.access_token ? { access_token: row.access_token } : {}),
     ...(tasks ? { tasks } : {}),
+    ...(metadata ? { source: metadata.source, ...(metadata.businessId ? { businessId: metadata.businessId } : {}), sources: [metadata] } : {}),
   };
 }
 
-function nextMetaPageUrl(next: string | undefined, userAccessToken: string) {
+function nextMetaPageUrl(next: string | undefined) {
   if (!next) return null;
   try {
     const url = new URL(next);
     if (url.protocol !== "https:" || url.hostname !== "graph.facebook.com") return null;
-    if (!url.searchParams.has("access_token")) url.searchParams.set("access_token", userAccessToken);
+    url.searchParams.delete("access_token");
+    url.searchParams.delete("appsecret_proof");
     return url;
   } catch {
     return null;
   }
 }
 
-function mergePage(pagesById: Map<string, MetaPage>, page: MetaPage) {
+function mergePage(pagesById: Map<string, InternalMetaPage>, page: InternalMetaPage) {
   const current = pagesById.get(page.id);
   if (!current) return pagesById.set(page.id, page);
+  const sourceEntries = [...(current.sources ?? []), ...(page.sources ?? (page.source ? [{ source: page.source, ...(page.businessId ? { businessId: page.businessId } : {}) }] : []))];
+  const sources = sourceEntries.filter((entry, index, all) => all.findIndex((candidate) => candidate.source === entry.source && candidate.businessId === entry.businessId) === index);
+  const preferredSource = current.access_token ? current : page.access_token ? page : current;
   pagesById.set(page.id, {
     ...current,
+    name: preferredSource.name,
     ...(current.access_token || !page.access_token ? {} : { access_token: page.access_token }),
     ...(current.tasks?.length || !page.tasks ? {} : { tasks: page.tasks }),
+    ...(preferredSource.source ? { source: preferredSource.source } : {}),
+    ...(preferredSource.businessId ? { businessId: preferredSource.businessId } : {}),
+    ...(sources.length ? { sources } : {}),
   });
+}
+
+async function fetchGraphCollection<T extends object>(initialUrl: URL, operation: string, userAccessToken: string): Promise<CollectionResult<T>> {
+  const rows: T[] = [];
+  let next: URL | null = initialUrl;
+  let requests = 0;
+  let paginationTruncated = false;
+  while (next && requests < MAX_PAGE_DISCOVERY_REQUESTS) {
+    const response = await metaJsonWithStatus<{ data?: T[]; paging?: { next?: string } }>(next, operation, withBearerToken(userAccessToken));
+    if (Array.isArray(response.body.data)) rows.push(...response.body.data);
+    requests += 1;
+    if (!response.body.paging?.next) {
+      next = null;
+      continue;
+    }
+    const validatedNext = nextMetaPageUrl(response.body.paging.next);
+    if (!validatedNext || requests >= MAX_PAGE_DISCOVERY_REQUESTS) {
+      paginationTruncated = true;
+      next = null;
+      continue;
+    }
+    next = validatedNext;
+  }
+  if (next) paginationTruncated = true;
+  return { rows, requests, paginationTruncated };
+}
+
+function withoutSourceMetadata(page: InternalMetaPage): MetaPage {
+  return {
+    id: page.id,
+    name: page.name,
+    ...(page.access_token ? { access_token: page.access_token } : {}),
+    ...(page.tasks ? { tasks: page.tasks } : {}),
+  };
+}
+
+function addCollectionCounters(counters: DiscoveryCounters, kind: keyof Omit<DiscoveryCounters, "paginationTruncated">, result: CollectionResult<unknown>) {
+  counters[kind] += result.requests;
+  counters.paginationTruncated ||= result.paginationTruncated;
+}
+
+function sourceForEdge(edge: PageEdge): MetaPageSource {
+  return edge === "owned_pages" ? "BUSINESS_OWNED_PAGES" : edge === "client_pages" ? "BUSINESS_CLIENT_PAGES" : "BUSINESS_ASSIGNED_PAGES";
 }
 
 function safeMetaError(error: unknown) {
@@ -320,36 +392,32 @@ function safeMetaError(error: unknown) {
   return {};
 }
 
+function isUnsupportedGraphObject(error: unknown) {
+  if (!(error instanceof MetaApiError)) return false;
+  return String(error.details.code ?? "") === "100" && String(error.details.subcode ?? "") === "33";
+}
+
 async function discoverPageRows(userAccessToken: string, tokenDebug: MetaTokenDebug, permissions: MetaPermissionDiagnostic[] = []): Promise<PageDiscoveryResult> {
   const config = await metaConfig();
+  const counters: DiscoveryCounters = { meAccountsRequests: 0, assignedPagesRequests: 0, businessesRequests: 0, businessPageEdgeRequests: 0, paginationTruncated: false };
   const url = new URL(`https://graph.facebook.com/${config.version}/me/accounts`);
   url.searchParams.set("fields", "id,name,tasks,access_token");
-  url.searchParams.set("access_token", userAccessToken);
-  const rows: GraphPage[] = [];
-  let next: URL | null = url;
-  let requests = 0;
-
-  while (next && requests < MAX_PAGE_DISCOVERY_REQUESTS) {
-    const response = await metaJsonWithStatus<PageDiscoveryResponse>(next, "pages.discovery");
-    const pageRows = Array.isArray(response.body.data) ? response.body.data : [];
-    rows.push(...pageRows);
+  const directRowsResult = await fetchGraphCollection<GraphPage>(url, "pages.discovery", userAccessToken);
+  addCollectionCounters(counters, "meAccountsRequests", directRowsResult);
+  const rows = directRowsResult.rows;
+  for (const pageRows of [rows]) {
     logger.info({
       operation: "pages.discovery",
-      httpStatus: response.httpStatus,
       dataRows: pageRows.length,
       pageIds: pageRows.map((row) => row.id ?? null),
-      pageNames: pageRows.map((row) => row.name ?? null),
-      tasks: pageRows.map((row) => Array.isArray(row.tasks) ? row.tasks.filter((task): task is string => typeof task === "string") : []),
       rowsWithPageAccessToken: pageRows.filter((row) => typeof row.access_token === "string" && row.access_token.length > 0).length,
       pageRows: pageRows.map((row) => ({ pageId: row.id ?? null, pageName: row.name ?? null, hasAccessToken: typeof row.access_token === "string" && row.access_token.length > 0 })),
-      paginationRequest: requests + 1,
+      paginationRequests: directRowsResult.requests,
     }, "Meta Page discovery response");
-    requests += 1;
-    next = nextMetaPageUrl(response.body.paging?.next, userAccessToken);
   }
 
-  const validRows = rows.map(normalizePage).filter((page): page is MetaPage => page !== null);
-  const pagesById = new Map<string, MetaPage>();
+  const validRows = rows.map((row) => normalizePage(row, { source: "ME_ACCOUNTS" })).filter((page): page is InternalMetaPage => page !== null);
+  const pagesById = new Map<string, InternalMetaPage>();
   for (const page of validRows) mergePage(pagesById, page);
 
   const targetScopes = new Map<string, Set<string>>();
@@ -378,37 +446,41 @@ async function discoverPageRows(userAccessToken: string, tokenDebug: MetaTokenDe
   let assignedPagesPageCount = 0;
   const assignedPageIds = new Set<string>();
   // Login for Business can authorize a user for Pages without exposing them
-  // through /me/accounts. This endpoint is a fallback and never makes direct
-  // Page discovery fail when Meta does not support it for the token.
-  if (rows.length === 0 || granularTargetIds.length > 0) {
+  // through /me/accounts. Always inspect this edge so a direct Page list never
+  // hides additional Business-managed Pages.
+  {
     try {
       const assignedUrl = new URL(`https://graph.facebook.com/${config.version}/me/assigned_pages`);
       assignedUrl.searchParams.set("fields", "id,name,tasks,access_token");
-      assignedUrl.searchParams.set("access_token", userAccessToken);
-      let assigned: { body: PageDiscoveryResponse; httpStatus: number };
+      let assignedRowsResult: CollectionResult<GraphPage>;
+      let assignedCredentialFieldError: unknown;
       try {
-        assigned = await metaJsonWithStatus<PageDiscoveryResponse>(assignedUrl, "pages.assigned_pages");
+        assignedRowsResult = await fetchGraphCollection<GraphPage>(assignedUrl, "pages.assigned_pages", userAccessToken);
       } catch (firstError) {
+        if (isUnsupportedGraphObject(firstError)) throw firstError;
         // Some Meta configurations expose the edge but reject access_token as
         // a requested field. Retry with identity/task fields only; credentials
         // are resolved later through the server-side Page credential flow.
+        assignedCredentialFieldError = firstError;
         const safeAssignedUrl = new URL(assignedUrl);
         safeAssignedUrl.searchParams.set("fields", "id,name,tasks");
         try {
-          assigned = await metaJsonWithStatus<PageDiscoveryResponse>(safeAssignedUrl, "pages.assigned_pages.identity");
-        } catch (secondError) {
-          errors.push(diagnosticError(firstError));
-          throw secondError;
+          assignedRowsResult = await fetchGraphCollection<GraphPage>(safeAssignedUrl, "pages.assigned_pages.identity", userAccessToken);
+        } catch {
+          throw firstError;
         }
       }
-      const assignedRows = Array.isArray(assigned.body.data) ? assigned.body.data : [];
-      const assignedPages = assignedRows.map(normalizePage).filter((page): page is MetaPage => page !== null);
+      counters.assignedPagesRequests += assignedRowsResult.requests;
+      counters.paginationTruncated ||= assignedRowsResult.paginationTruncated;
+      const assignedRows = assignedRowsResult.rows;
+      const assignedPages = assignedRows.map((row) => normalizePage(row, { source: "ME_ASSIGNED_PAGES" })).filter((page): page is InternalMetaPage => page !== null);
+      if (assignedCredentialFieldError && assignedRows.length > 0 && assignedPages.length === 0) errors.push(diagnosticError(assignedCredentialFieldError));
       assignedPagesPageCount = assignedPages.length;
       for (const page of assignedPages) {
         assignedPageIds.add(page.id);
         mergePage(pagesById, page);
       }
-      logger.info({ operation: "pages.assigned_pages", httpStatus: assigned.httpStatus, dataRows: assignedRows.length, validPageIdentities: assignedPages.length, rowsWithPageAccessToken: assignedRows.filter((row) => typeof row.access_token === "string" && row.access_token.length > 0).length }, "Meta assigned Page discovery response");
+      logger.info({ operation: "pages.assigned_pages", dataRows: assignedRows.length, validPageIdentities: assignedPages.length, rowsWithPageAccessToken: assignedRows.filter((row) => typeof row.access_token === "string" && row.access_token.length > 0).length, paginationRequests: assignedRowsResult.requests }, "Meta assigned Page discovery response");
     } catch (error) {
       errors.push(diagnosticError(error));
       logger.warn({ operation: "pages.assigned_pages", ...safeMetaError(error) }, "Meta assigned Page discovery failed");
@@ -420,12 +492,26 @@ async function discoverPageRows(userAccessToken: string, tokenDebug: MetaTokenDe
     try {
       const verificationUrl = new URL(`https://graph.facebook.com/${config.version}/${encodeURIComponent(targetId)}`);
       verificationUrl.searchParams.set("fields", "id,name,tasks,access_token");
-      verificationUrl.searchParams.set("access_token", userAccessToken);
-      const verified = normalizePage(await metaJson<GranularPageResponse>(verificationUrl, "pages.granular.verify"));
+      let verifiedRow: GranularPageResponse;
+      let credentialFieldError: unknown;
+      try {
+        verifiedRow = await metaJson<GranularPageResponse>(verificationUrl, "pages.granular.verify", withBearerToken(userAccessToken));
+      } catch (firstError) {
+        if (isUnsupportedGraphObject(firstError)) throw firstError;
+        credentialFieldError = firstError;
+        const identityUrl = new URL(verificationUrl);
+        identityUrl.searchParams.set("fields", "id,name,tasks");
+        try {
+          verifiedRow = await metaJson<GranularPageResponse>(identityUrl, "pages.granular.verify.identity", withBearerToken(userAccessToken));
+        } catch {
+          throw firstError;
+        }
+      }
+      const verified = normalizePage(verifiedRow, { source: "GRANULAR_TARGET" });
       if (!verified) {
         const matchedAssignedPage = assignedPageIds.has(targetId);
         if (matchedAssignedPage) verifiedGranularPages += 1;
-        setTargetDiagnostic(targetId, matchedAssignedPage ? "TARGET_PAGE_VERIFIED" : "TARGET_UNRESOLVED");
+        setTargetDiagnostic(targetId, matchedAssignedPage ? "TARGET_PAGE_VERIFIED" : "TARGET_UNRESOLVED", credentialFieldError);
         if (!matchedAssignedPage) logger.warn({ targetId, associatedScopes: [...(targetScopes.get(targetId) ?? [])], verification: "TARGET_UNRESOLVED" }, "Meta granular target did not resolve to a Page identity");
         continue;
       }
@@ -443,26 +529,56 @@ async function discoverPageRows(userAccessToken: string, tokenDebug: MetaTokenDe
 
   let businessAccessDetected: BusinessAccessState = "unknown";
   let businessAssetsReturned: number | null = null;
+  const businessIds = new Set<string>();
   const businessAssetIds = new Set<string>();
   const businessManagementGranted = permissions.find((permission) => permission.permission === BUSINESS_MANAGEMENT_PERMISSION)?.status === "granted" || tokenDebug.scopes.includes(BUSINESS_MANAGEMENT_PERMISSION);
   if (businessManagementGranted) {
     try {
       const businessesUrl = new URL(`https://graph.facebook.com/${config.version}/me/businesses`);
       businessesUrl.searchParams.set("fields", "id,name");
-      businessesUrl.searchParams.set("access_token", userAccessToken);
-      const businesses = await metaJson<{ data?: GraphBusiness[] }>(businessesUrl, "businesses.discovery");
-      const validBusinesses = (businesses.data ?? []).filter((business) => typeof business.id === "string" && business.id.length > 0);
+      const businessesResult = await fetchGraphCollection<GraphBusiness>(businessesUrl, "businesses.discovery", userAccessToken);
+      addCollectionCounters(counters, "businessesRequests", businessesResult);
+      const validBusinesses = businessesResult.rows.filter((business) => typeof business.id === "string" && business.id.length > 0);
       businessAccessDetected = validBusinesses.length > 0;
       const assets = new Map<string, GraphAsset>();
       for (const business of validBusinesses) {
+        businessIds.add(business.id!);
         businessAssetIds.add(business.id!);
-        for (const edge of ["owned_pages", "client_pages", "assigned_pages"] as const) {
+        for (const edge of ["owned_pages", "client_pages", "assigned_pages"] as const satisfies PageEdge[]) {
           try {
             const assetsUrl = new URL(`https://graph.facebook.com/${config.version}/${business.id}/${edge}`);
             assetsUrl.searchParams.set("fields", "id,name,tasks,access_token");
-            assetsUrl.searchParams.set("access_token", userAccessToken);
-            const result = await metaJson<{ data?: GraphAsset[] }>(assetsUrl, `businesses.${edge}`);
-            for (const asset of result.data ?? []) if (asset.id) assets.set(asset.id, asset);
+            let result: CollectionResult<GraphAsset>;
+            let credentialFieldError: unknown;
+            try {
+              result = await fetchGraphCollection<GraphAsset>(assetsUrl, `businesses.${edge}`, userAccessToken);
+            } catch (firstError) {
+              if (isUnsupportedGraphObject(firstError)) throw firstError;
+              // Preserve identity discovery when Meta rejects access_token as a
+              // field. Credential retrieval is retried separately on connect.
+              credentialFieldError = firstError;
+              const identityUrl = new URL(assetsUrl);
+              identityUrl.searchParams.set("fields", "id,name,tasks");
+              try {
+                result = await fetchGraphCollection<GraphAsset>(identityUrl, `businesses.${edge}.identity`, userAccessToken);
+              } catch {
+                throw firstError;
+              }
+            }
+            if (credentialFieldError && result.rows.length > 0 && !result.rows.some((asset) => typeof asset.id === "string" && asset.id.length > 0 && typeof asset.name === "string" && asset.name.length > 0)) errors.push(diagnosticError(credentialFieldError));
+            counters.businessPageEdgeRequests += result.requests;
+            counters.paginationTruncated ||= result.paginationTruncated;
+            for (const asset of result.rows) if (asset.id) {
+              const existingAsset = assets.get(asset.id) as (GraphAsset & { __source?: MetaPageSource; __businessId?: string }) | undefined;
+              assets.set(asset.id, {
+                ...existingAsset,
+                ...asset,
+                ...(existingAsset?.access_token && !asset.access_token ? { access_token: existingAsset.access_token } : {}),
+                ...(existingAsset?.tasks && !asset.tasks ? { tasks: existingAsset.tasks } : {}),
+                __source: existingAsset?.__source ?? sourceForEdge(edge),
+                __businessId: existingAsset?.__businessId ?? business.id,
+              } as GraphAsset & { __source: MetaPageSource; __businessId: string });
+            }
           } catch (error) {
             errors.push(diagnosticError(error));
           }
@@ -470,8 +586,9 @@ async function discoverPageRows(userAccessToken: string, tokenDebug: MetaTokenDe
       }
       businessAssetsReturned = assets.size;
       for (const asset of assets.values()) {
-        businessAssetIds.add(asset.id!);
-        const page = normalizePage(asset);
+        const assetWithMetadata = asset as GraphAsset & { __source?: MetaPageSource; __businessId?: string };
+        if (asset.id) businessAssetIds.add(asset.id);
+        const page = normalizePage(asset, assetWithMetadata.__source ? { source: assetWithMetadata.__source, businessId: assetWithMetadata.__businessId } : undefined);
         if (page) mergePage(pagesById, page);
       }
     } catch (error) {
@@ -483,7 +600,8 @@ async function discoverPageRows(userAccessToken: string, tokenDebug: MetaTokenDe
   for (const targetId of granularTargetIds) {
     const diagnostic = targetDiagnostics.get(targetId);
     if (diagnostic?.verification === "TARGET_PAGE_VERIFIED") continue;
-    if (businessAssetIds.has(targetId)) setTargetDiagnostic(targetId, "TARGET_BUSINESS_ASSET");
+    if (businessIds.has(targetId)) setTargetDiagnostic(targetId, "TARGET_BUSINESS_ASSET");
+    else if (businessAssetIds.has(targetId) && pagesById.has(targetId)) setTargetDiagnostic(targetId, "TARGET_PAGE_VERIFIED");
     else if (!diagnostic) setTargetDiagnostic(targetId, "TARGET_UNRESOLVED");
   }
   const mergedPages = [...pagesById.values()];
@@ -505,8 +623,13 @@ async function discoverPageRows(userAccessToken: string, tokenDebug: MetaTokenDe
     granularTargetDiagnostics,
     verifiedGranularPages,
     finalMergedPages: mergedPages.length,
+    meAccountsRequests: counters.meAccountsRequests,
+    assignedPagesRequests: counters.assignedPagesRequests,
+    businessesRequests: counters.businessesRequests,
+    businessPageEdgeRequests: counters.businessPageEdgeRequests,
+    paginationTruncated: counters.paginationTruncated,
   } satisfies PageDiscoveryDiagnostics;
-  logger.info({ operation: "pages.discovery.summary", ...diagnostics, paginationRequests: requests, paginationTruncated: Boolean(next) }, "Meta Page discovery summary");
+  logger.info({ operation: "pages.discovery.summary", ...diagnostics }, "Meta Page discovery summary");
   return { pages: mergedPages, diagnostics, errors, businessAccessDetected, businessAssetsReturned };
 }
 
@@ -514,7 +637,7 @@ export async function discoverPages(userAccessToken: string, tokenDebug?: MetaTo
   // Callers handling OAuth should pass the already validated debug result. The
   // optional form preserves this low-level source-A helper for internal tools.
   const emptyDebug: MetaTokenDebug = { isValid: true, appId: null, type: null, userId: null, expiresAt: null, dataAccessExpiresAt: null, scopes: [], granularScopes: [] };
-  return (await discoverPageRows(userAccessToken, tokenDebug ?? emptyDebug)).pages;
+  return (await discoverPageRows(userAccessToken, tokenDebug ?? emptyDebug)).pages.map(withoutSourceMetadata);
 }
 
 export function pageDiscoveryStatus(diagnostics: PageDiscoveryDiagnostics): "NO_PAGES" | "PAGE_FOUND_TOKEN_PENDING" | "PAGES_AVAILABLE" {
@@ -527,8 +650,7 @@ export async function resolvePageAccessToken(userAccessToken: string, page: Meta
   const config = await metaConfig();
   const url = new URL(`https://graph.facebook.com/${config.version}/${encodeURIComponent(page.id)}`);
   url.searchParams.set("fields", "id,access_token");
-  url.searchParams.set("access_token", userAccessToken);
-  const result = await metaJson<{ id?: string; access_token?: string }>(url, "page.access_token");
+  const result = await metaJson<{ id?: string; access_token?: string }>(url, "page.access_token", withBearerToken(userAccessToken));
   if (result.id && result.id !== page.id) throw new MetaApiError("Meta returned a different Page identity while resolving the Page credential.", { operation: "page.access_token" });
   if (!result.access_token) throw new MetaApiError("Meta did not return a usable Page access credential.", { operation: "page.access_token" });
   return result.access_token;
@@ -586,12 +708,14 @@ export async function runPageAccessDiagnostic(userAccessToken: string, options: 
   const config = await metaConfig();
   const errors: PageAccessDiagnostic["errors"] = [];
   const tokenDebug = await inspectMetaToken(userAccessToken);
-  const user = await metaJson<GraphUser>(new URL(`https://graph.facebook.com/${config.version}/me?fields=id,name&access_token=${encodeURIComponent(userAccessToken)}`), "oauth.user");
+  const userUrl = new URL(`https://graph.facebook.com/${config.version}/me`);
+  userUrl.searchParams.set("fields", "id,name");
+  const user = await metaJson<GraphUser>(userUrl, "oauth.user", withBearerToken(userAccessToken));
   if (!user.id) throw new MetaApiError("Meta did not return an authenticated user identity.", { operation: "oauth.user" });
 
   const permissions = await getGrantedPermissions(userAccessToken);
   const pageDiscovery = await discoverPageRows(userAccessToken, tokenDebug, permissions);
-  const { pages } = pageDiscovery;
+  const pages = pageDiscovery.pages.map(withoutSourceMetadata);
   errors.push(...pageDiscovery.errors);
   const { businessAccessDetected, businessAssetsReturned } = pageDiscovery;
 

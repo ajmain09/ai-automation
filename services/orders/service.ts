@@ -122,3 +122,13 @@ export async function getPageOrders(pageId: string) {
   if (isDevPreview()) return getPreviewOrders(pageId);
   return prisma.order.findMany({ where: { pageId }, orderBy: { createdAt: "desc" }, take: 100, include: { revisions: { orderBy: { revision: "desc" }, take: 1 } } });
 }
+
+export async function getGlobalOrders(options: { pageId?: string; status?: string; search?: string; cursor?: string; limit?: number } = {}) {
+  if (isDevPreview()) return [];
+  const limit = Math.min(Math.max(options.limit ?? 50, 1), 100);
+  const search = options.search?.trim();
+  const rows = await prisma.order.findMany({ where: { ...(options.pageId ? { pageId: options.pageId } : {}), ...(options.status ? { status: options.status } : {}), ...(options.cursor ? { id: { lt: options.cursor } } : {}), ...(search ? { OR: [{ customerName: { contains: search, mode: "insensitive" } }, { normalizedPhone: { contains: search } }, { productName: { contains: search, mode: "insensitive" } }] } : {}) }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: limit + 1, include: { page: { select: { id: true, name: true, slug: true } }, customer: { select: { id: true, name: true, phone: true } }, revisions: { orderBy: { revision: "desc" }, take: 1 } } });
+  const hasMore = rows.length > limit;
+  const items = rows.slice(0, limit);
+  return { items, nextCursor: hasMore ? items.at(-1)?.id ?? null : null };
+}

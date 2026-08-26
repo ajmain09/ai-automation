@@ -19,11 +19,13 @@ export interface AiProvider { readonly name: string; readonly model: string; com
 export class DeepSeekProvider implements AiProvider {
   readonly name = "deepseek";
   readonly model: string;
-  constructor(private readonly apiKey: string, private readonly baseUrl = "https://api.deepseek.com", model = "deepseek-v4-flash", private readonly pageScope?: string) { this.model = normalizeModel(model).model; }
+  constructor(private readonly apiKey: string, private readonly baseUrl = "https://api.deepseek.com", model = "deepseek-v4-flash", private readonly pageScope?: string, private readonly options: { maxOutputTokens?: number; thinkingOverride?: string | null } = {}) { this.model = normalizeModel(model).model; }
   async complete(input: { system: string; user: string; callType: AiCallType }) {
     if (!this.apiKey) throw new Error("DeepSeek is not configured");
     return withProviderCircuit(this.pageScope ? `deepseek:${this.pageScope}` : "deepseek", async () => {
-      const response = await fetch(`${this.baseUrl}/chat/completions`, { method: "POST", headers: { Authorization: `Bearer ${this.apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: this.model, temperature: 0.2, response_format: { type: "json_object" }, messages: [{ role: "system", content: input.system }, { role: "user", content: input.user }] }), signal: AbortSignal.timeout(30_000) });
+      const requestBody: Record<string, unknown> = { model: this.model, temperature: 0.2, max_tokens: this.options.maxOutputTokens ?? 700, response_format: { type: "json_object" }, messages: [{ role: "system", content: input.system }, { role: "user", content: input.user }] };
+      if (this.options.thinkingOverride === "on") requestBody.thinking = { type: "enabled" };
+      const response = await fetch(`${this.baseUrl}/chat/completions`, { method: "POST", headers: { Authorization: `Bearer ${this.apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(requestBody), signal: AbortSignal.timeout(30_000) });
       const body = await response.json() as { choices?: Array<{ message?: { content?: string } }>; usage?: { prompt_tokens?: number; prompt_cache_hit_tokens?: number; completion_tokens?: number; total_tokens?: number }; id?: string; error?: { message?: string } };
       if (!response.ok || body.error) throw new Error(body.error?.message ?? `DeepSeek request failed (${response.status})`);
       const content = body.choices?.[0]?.message?.content?.trim();
@@ -36,9 +38,11 @@ export class DeepSeekProvider implements AiProvider {
 
 /** Loads and decrypts exactly one Page credential inside the server boundary. */
 export async function createPageDeepSeekProvider(pageId: string): Promise<DeepSeekProvider> {
-  const settings = await prisma.pageAiSettings.findUnique({ where: { pageId }, select: { encryptedApiKey: true, baseUrl: true, model: true } });
+  const settings = await prisma.pageAiSettings.findUnique({ where: { pageId }, select: { encryptedApiKey: true, baseUrl: true, model: true, maxOutputTokens: true, thinkingOverride: true } });
   if (!settings?.encryptedApiKey) throw new Error("DeepSeek is not configured for this Page");
-  return new DeepSeekProvider(decryptCredential(settings.encryptedApiKey), settings.baseUrl, settings.model, pageId);
+  const master = settings.model === "master" ? await prisma.systemSetting.findUnique({ where: { key: "master_ai_model" }, select: { value: true } }) : null;
+  const model = typeof master?.value === "string" ? master.value : settings.model === "master" ? process.env.MASTER_AI_MODEL ?? "deepseek-v4-flash" : settings.model;
+  return new DeepSeekProvider(decryptCredential(settings.encryptedApiKey), settings.baseUrl, model, pageId, { maxOutputTokens: settings.maxOutputTokens ?? 700, thinkingOverride: settings.thinkingOverride });
 }
 
 export class StaticAiProvider implements AiProvider {
@@ -47,7 +51,7 @@ export class StaticAiProvider implements AiProvider {
   async complete() { return { content: this.content }; }
 }
 
-export function fallbackAiResponse(): AiResponse { return { intent: "unknown", reply: "Thanks for your message. Could you share a little more about what you need?", fact_updates: [], asked_question_key: null, recommended_product_ids: [], order_action: "NONE" }; }
+export function fallbackAiResponse(language = "english"): AiResponse { const reply = language === "bangla" ? "আপনার বার্তাটির জন্য ধন্যবাদ। আপনি কী জানতে চান একটু জানাবেন?" : language === "banglish" ? "Apnar message-er jonno dhonnobad. Apni ki jante chan ektu bolben?" : "Thanks for your message. Could you share a little more about what you need?"; return { intent: "unknown", reply, fact_updates: [], asked_question_key: null, recommended_product_ids: [], order_action: "NONE" }; }
 
 type AttemptHandle = { runId: string; startedAt: number; pageId: string; reservedBdt: number; reservationKey?: string };
 

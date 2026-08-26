@@ -18,3 +18,35 @@ export async function createProduct(input: { pageId: string; name: string; descr
   logger.info({ pageId: input.pageId, version: draft.version }, "product.draft_saved");
   return draft;
 }
+
+export async function updateProduct(input: { pageId: string; productId: string; name: string; description?: string; sku: string; price: number; oldPrice?: number; size?: string; color?: string; active?: boolean }, adminId: string) {
+  return prisma.$transaction(async (tx) => {
+    const product = await tx.product.findFirst({ where: { id: input.productId, pageId: input.pageId }, include: { variants: true } });
+    if (!product) throw new Error("Product not found in Page scope");
+    const variant = product.variants[0];
+    if (!variant) throw new Error("Product has no variant");
+    const updated = await tx.product.update({ where: { id: product.id }, data: { name: input.name, description: input.description ?? null, active: input.active ?? product.active, variants: { update: { where: { id: variant.id }, data: { sku: input.sku, size: input.size ?? null, color: input.color ?? null, currentPrice: input.price, oldPrice: input.oldPrice ?? null } } } }, include: { variants: true } });
+    await tx.auditLog.create({ data: { adminId, pageId: input.pageId, action: "product.updated", metadata: { productId: product.id, variantId: variant.id } } });
+    return updated;
+  });
+}
+
+export async function setProductActive(input: { pageId: string; productId: string; active: boolean }, adminId: string) {
+  return prisma.$transaction(async (tx) => {
+    const product = await tx.product.findFirst({ where: { id: input.productId, pageId: input.pageId }, select: { id: true } });
+    if (!product) throw new Error("Product not found in Page scope");
+    const updated = await tx.product.update({ where: { id: product.id }, data: { active: input.active } });
+    await tx.auditLog.create({ data: { adminId, pageId: input.pageId, action: input.active ? "product.activated" : "product.deactivated", metadata: { productId: product.id } } });
+    return updated;
+  });
+}
+
+export async function deleteProduct(input: { pageId: string; productId: string }, adminId: string) {
+  return prisma.$transaction(async (tx) => {
+    const product = await tx.product.findFirst({ where: { id: input.productId, pageId: input.pageId }, select: { id: true } });
+    if (!product) throw new Error("Product not found in Page scope");
+    await tx.product.delete({ where: { id: product.id } });
+    await tx.auditLog.create({ data: { adminId, pageId: input.pageId, action: "product.deleted", metadata: { productId: product.id } } });
+    return { id: product.id };
+  });
+}

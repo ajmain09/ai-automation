@@ -3,6 +3,7 @@ import { isDevPreview } from "@/lib/env";
 import { getPreviewAiSettings, getPreviewPage, setPreviewLive } from "@/services/preview/store";
 import { resolvePageId } from "@/services/pages/queries";
 import { publishLatestDraft } from "@/services/configuration/service";
+import { checkFacebookTransport } from "@/services/meta/runtime-gate";
 
 export type ReadinessCheck = { key: string; label: string; ok: boolean; detail: string };
 export type PageReadiness = { ready: boolean; checks: ReadinessCheck[] };
@@ -14,7 +15,7 @@ export async function checkPageReadiness(pageId: string): Promise<PageReadiness>
     const aiConfigured = !page.aiEnabled || getPreviewAiSettings(pageId).apiKeyConfigured;
     const requiredOrderFields = page.settings?.requiredOrderFields;
     const checks: ReadinessCheck[] = [
-      { key: "facebook", label: "Facebook connection", ok: page.connectionStatus === "CONNECTED", detail: "Mock Facebook connection is active in local preview." },
+      { key: "facebook", label: "Facebook connection", ok: checkFacebookTransport(page).ok, detail: "Mock Facebook connection is active in local preview." },
       { key: "live_config", label: "Live business configuration", ok: Boolean(page.configurationVersions.some((item) => item.status === "LIVE") || page.configurationVersions.some((item) => item.status === "DRAFT")), detail: "A validated business configuration is required before go-live." },
       { key: "conflicts", label: "Critical conflicts", ok: true, detail: "No fixture conflicts are present." },
       { key: "products", label: "Active product catalog", ok: page.products.some((product) => product.variants.length > 0), detail: "At least one active product with an active variant is required." },
@@ -33,7 +34,7 @@ export async function checkPageReadiness(pageId: string): Promise<PageReadiness>
   const live = page.configurationVersions[0];
   const data = live?.businessData as { conflicts?: Array<{ critical?: boolean }> } | null | undefined;
   const checks: ReadinessCheck[] = [
-    { key: "facebook", label: "Facebook connection", ok: page.connectionStatus === "CONNECTED" && Boolean(page.metaPageId && page.connection?.encryptedToken), detail: "A usable Meta Page connection is required." },
+    { key: "facebook", label: "Facebook connection", ok: checkFacebookTransport(page).ok, detail: "A usable Meta Page connection with matching Page and PageConnection status is required." },
     { key: "live_config", label: "Live business configuration", ok: Boolean(live), detail: "A validated LIVE configuration is required." },
     { key: "conflicts", label: "Critical conflicts", ok: !data?.conflicts?.some((item) => item.critical), detail: "Critical business conflicts must be resolved." },
     { key: "products", label: "Active product catalog", ok: page.products.some((product) => product.variants.length > 0), detail: "At least one active product with an active variant is required." },

@@ -8,6 +8,7 @@ import { validateReferencedProducts } from "@/services/products/validation";
 import { sendSafeReply } from "@/services/messaging/outbound";
 import { QueueJob } from "@/services/jobs/queue";
 import { applyOrderSignal } from "@/services/orders/conversation";
+import { checkMessengerRuntime } from "@/services/meta/runtime-gate";
 
 const jobPayload = (value: unknown) => {
   if (!value || typeof value !== "object") throw new Error("Invalid conversation job payload");
@@ -19,9 +20,9 @@ const jobPayload = (value: unknown) => {
 export async function processConversationJob(job: QueueJob, provider?: AiProvider) {
   const input = jobPayload(job.payload);
   if (job.expiresAt && job.expiresAt <= new Date()) return;
-  const conversation = await prisma.conversation.findFirst({ where: { id: input.conversationId, pageId: job.pageId }, include: { customer: { include: { memory: true } }, messages: { orderBy: { createdAt: "desc" }, take: 20 }, page: { include: { businessProfile: true, settings: true, aiSettings: true } } } });
+  const conversation = await prisma.conversation.findFirst({ where: { id: input.conversationId, pageId: job.pageId }, include: { customer: { include: { memory: true } }, messages: { orderBy: { createdAt: "desc" }, take: 20 }, page: { include: { connection: true, businessProfile: true, settings: true, aiSettings: true } } } });
   if (!conversation || !conversation.customer || !job.pageId) throw new Error("Conversation/page scope not found");
-  if (!conversation.page.aiEnabled || conversation.page.aiStatus === "PAUSED_BY_BUDGET") return;
+  if (conversation.customer.pageId !== job.pageId || !checkMessengerRuntime(conversation.page).ok) return;
   if (input.version !== undefined && input.version !== conversation.version) return;
   const newest = conversation.messages.find((message) => message.direction === "INBOUND");
   if (!newest) return;
@@ -37,11 +38,11 @@ export async function processConversationJob(job: QueueJob, provider?: AiProvide
   const policies = JSON.stringify({ business: conversation.page.businessProfile, settings: conversation.page.settings });
   const context = buildBoundedContext({ rules: `Never invent products, prices, policies, stock, or order state. Use semantic question keys and do not repeat complete facts. Return only the JSON schema. Page language: ${conversation.page.aiSettings?.language ?? "auto"}. Tone: ${conversation.page.aiSettings?.tone ?? "natural_sales"}. Reply length: ${conversation.page.aiSettings?.replyLength ?? "short"}. Custom sales instructions: ${conversation.page.aiSettings?.customSalesInstructions ?? "none"}.`, policies, products, memory, orderState: activeOrder ? { orderSessionId: activeOrder.id, status: activeOrder.status, ...(activeOrder.state as Record<string, unknown>) } : null, summary: memory.summary, recentMessages: conversation.messages.slice(0, conversation.page.aiSettings?.recentMessageContext ?? 10).reverse().map((message) => `${message.direction}: ${message.text ?? ""}`), newestMessage: newest.text });
   const activeProvider = provider ?? await createPageDeepSeekProvider(job.pageId);
-  const result = await runStructuredAi({ pageId: job.pageId, provider: activeProvider, callType: "CHAT_REPLY", system: "You are a careful sales assistant. Candidate facts are not authoritative until the backend validates them.", user: context, schema: aiResponseSchema, fallback: fallbackAiResponse() });
+  const result = await runStructuredAi({ pageId: job.pageId, provider: activeProvider, callType: "CHAT_REPLY", system: "You are a careful sales assistant. Candidate facts are not authoritative until the backend validates them.", user: context, schema: aiResponseSchema, fallback: fallbackAiResponse(conversation.page.aiSettings?.language ?? "english") });
   const effectiveResult = { ...result, recommended_product_ids: result.recommended_product_ids.slice(0, conversation.page.aiSettings?.maxProductsPerRecommendation ?? 1) };
-  const fresh = await prisma.conversation.findFirst({ where: { id: conversation.id, pageId: job.pageId }, select: { version: true, manualReplyUntil: true } });
+  const fresh = await prisma.conversation.findFirst({ where: { id: conversation.id, pageId: job.pageId }, select: { version: true, manualReplyUntil: true, page: { select: { isActive: true, lifecycleStatus: true, aiEnabled: true, aiStatus: true, connectionStatus: true, metaPageId: true, connection: { select: { status: true, encryptedToken: true } } } } } });
   if (!fresh) return;
-  if (fresh.version !== conversation.version || (fresh.manualReplyUntil && fresh.manualReplyUntil > new Date())) return;
+  if (!checkMessengerRuntime(fresh.page).ok || fresh.version !== conversation.version || (fresh.manualReplyUntil && fresh.manualReplyUntil > new Date())) return;
   await validateReferencedProducts(job.pageId, effectiveResult.recommended_product_ids);
   const orderResult = await applyOrderSignal({ pageId: job.pageId, customerId: conversation.customer.id, text: newest.text, result: effectiveResult, requiredFields: Array.isArray(conversation.page.settings?.requiredOrderFields) ? conversation.page.settings.requiredOrderFields.map(String) : ["name", "phone", "address", "product", "variant", "quantity"], currency: conversation.page.settings?.currency ?? "BDT", countryCode: conversation.page.settings?.countryCode ?? "BD", configurationVersion: generationLiveConfiguration?.version });
   const orderSessionAfter = await prisma.orderSession.findFirst({ where: { pageId: job.pageId, customerId: conversation.customer.id, status: "ACTIVE" }, orderBy: { updatedAt: "desc" }, select: { id: true } });

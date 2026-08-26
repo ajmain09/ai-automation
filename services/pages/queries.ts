@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/db/prisma";
 import { isDevPreview } from "@/lib/env";
-import { getPreviewDashboard, getPreviewPage, getPreviewPages, PreviewPage } from "@/services/preview/store";
+import { getPreviewConversations, getPreviewDashboard, getPreviewPage, getPreviewPages, PreviewPage } from "@/services/preview/store";
 import { startOfDhakaMonth } from "@/services/time/timezone";
 
 export async function getDashboardData() {
@@ -24,4 +24,18 @@ export async function getPageById(idOrSlug: string) {
 export async function resolvePageId(idOrSlug: string) {
   const page = await getPageById(idOrSlug);
   return page?.id ?? null;
+}
+
+export async function getPageConversations(pageId: string, options: { search?: string; cursor?: string; limit?: number } = {}) {
+  if (isDevPreview()) return getPreviewConversations(pageId);
+  const limit = Math.min(Math.max(options.limit ?? 30, 1), 100);
+  const search = options.search?.trim();
+  const rows = await prisma.conversation.findMany({
+    where: { pageId, ...(options.cursor ? { id: { lt: options.cursor } } : {}), ...(search ? { customer: { name: { contains: search, mode: "insensitive" } } } : {}) },
+    orderBy: [{ updatedAt: "desc" }, { id: "desc" }], take: limit + 1,
+    select: { id: true, updatedAt: true, lastCustomerMessageAt: true, customer: { select: { id: true, name: true, phone: true } }, messages: { orderBy: { createdAt: "desc" }, take: 1, select: { text: true, direction: true, createdAt: true } }, _count: { select: { messages: true, outboundMessages: true } } },
+  });
+  const hasMore = rows.length > limit;
+  const items = rows.slice(0, limit);
+  return { items, nextCursor: hasMore ? items.at(-1)?.id ?? null : null };
 }

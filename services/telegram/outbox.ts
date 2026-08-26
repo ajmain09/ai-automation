@@ -29,7 +29,11 @@ export async function processNextTelegramDelivery(client?: TelegramClient) {
     if (terminal) {
       await prisma.$transaction([prisma.deliveryOutbox.update({ where: { id: current.id }, data: { status: current.attempts >= current.maxAttempts && kind === "TRANSIENT" ? "DEAD_LETTER" : "FAILED_PERMANENT", leaseUntil: null, lastError: message.slice(0, 500) } }), prisma.issue.create({ data: { pageId: current.pageId, type: "TELEGRAM_DELIVERY", severity: "high", title: "Telegram delivery failed", description: message.slice(0, 500) } })]);
     } else {
-      await prisma.deliveryOutbox.update({ where: { id: current.id }, data: { status: "FAILED_RETRYABLE", nextAttemptAt: new Date(Date.now() + backoffWithJitter(current.attempts)), leaseUntil: null, lastError: message.slice(0, 500) } });
+      const nextAttemptAt = new Date(Date.now() + backoffWithJitter(current.attempts));
+      await prisma.$transaction(async (tx) => {
+        await tx.deliveryOutbox.update({ where: { id: current.id }, data: { status: "FAILED_RETRYABLE", nextAttemptAt, leaseUntil: null, lastError: message.slice(0, 500) } });
+        await tx.job.create({ data: { pageId: current.pageId, type: "PROCESS_TELEGRAM_DELIVERY", payload: { deliveryOutboxId: current.id }, runAt: nextAttemptAt, idempotencyKey: `telegram-retry:${current.deliveryKey}:${current.attempts}`, maxAttempts: 1 } }).catch(() => undefined);
+      });
     }
     return null;
   }

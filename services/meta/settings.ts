@@ -3,6 +3,10 @@ import { prisma } from "@/lib/db/prisma";
 import { decryptCredential, encryptCredential } from "@/lib/encryption/service";
 
 const META_REQUIRED_PERMISSIONS = ["pages_show_list", "pages_read_engagement", "pages_manage_metadata", "pages_messaging", "business_management"] as const;
+const META_GRAPH_VERSION = /^v\d+\.\d+$/;
+
+export type MetaPlatformStatus = "READY" | "NOT_CONFIGURED";
+export type MetaAutoConnectStatus = "AUTO_CONNECT_READY" | "AUTO_CONNECT_NOT_CONFIGURED";
 
 export type MetaPlatformConfig = {
   appId: string;
@@ -13,6 +17,23 @@ export type MetaPlatformConfig = {
   redirectUri: string;
   webhookUrl: string;
 };
+
+export function deriveMetaPlatformReadiness(config: MetaPlatformConfig): { status: MetaPlatformStatus; autoConnectStatus: MetaAutoConnectStatus; webhookConfigured: boolean } {
+  const webhookConfigured = config.webhookUrl === canonicalUrls.metaWebhook;
+  const ready = Boolean(
+    config.appId.trim()
+    && config.appSecret.trim()
+    && config.verifyToken.trim()
+    && META_GRAPH_VERSION.test(config.graphApiVersion.trim())
+    && webhookConfigured
+  );
+  const autoConnectReady = ready && Boolean(config.loginConfigurationId.trim()) && config.redirectUri === canonicalUrls.metaRedirect;
+  return {
+    status: ready ? "READY" : "NOT_CONFIGURED",
+    autoConnectStatus: autoConnectReady ? "AUTO_CONNECT_READY" : "AUTO_CONNECT_NOT_CONFIGURED",
+    webhookConfigured,
+  };
+}
 
 async function storedMetaSetting() {
   return prisma.metaPlatformSetting.findFirst({ orderBy: { createdAt: "asc" } });
@@ -35,7 +56,7 @@ export async function getMetaPlatformConfig(): Promise<MetaPlatformConfig> {
 export async function getMetaControlCenter() {
   const config = await getMetaPlatformConfig();
   const stored = await storedMetaSetting();
-  const configured = Boolean(config.appId && config.appSecret && config.verifyToken && config.loginConfigurationId && config.redirectUri === canonicalUrls.metaRedirect);
+  const readiness = deriveMetaPlatformReadiness(config);
   return {
     globalAiPaused: false,
     general: { applicationName: "Growthifyx AI Sales", canonicalDomain: canonicalUrls.app, currency: "BDT" as const, timezone: "Asia/Dhaka", country: "Bangladesh", language: "Auto" },
@@ -44,12 +65,15 @@ export async function getMetaControlCenter() {
       appSecretConfigured: Boolean(config.appSecret),
       verifyTokenConfigured: Boolean(config.verifyToken),
       graphApiVersion: config.graphApiVersion,
+      webhookUrl: canonicalUrls.metaWebhook,
+      webhookConfigured: readiness.webhookConfigured,
       loginConfigurationId: config.loginConfigurationId,
       loginConfigurationConfigured: Boolean(config.loginConfigurationId),
       oauthRedirectUri: config.redirectUri,
       oauthRedirectConfigured: config.redirectUri === canonicalUrls.metaRedirect,
       requiredPermissions: [...META_REQUIRED_PERMISSIONS],
-      status: configured ? "READY" as const : "NOT_CONFIGURED" as const,
+      status: readiness.status,
+      autoConnectStatus: readiness.autoConnectStatus,
       lastError: stored?.lastError ?? null,
       lastTestAt: stored?.lastApiTestAt ?? null,
     },
@@ -62,8 +86,9 @@ export async function saveMetaPlatformConfig(input: { appId: string; appSecret?:
   const appSecret = input.appSecret?.trim() || current.appSecret;
   const verifyToken = input.verifyToken?.trim() || current.verifyToken;
   const graphApiVersion = input.graphApiVersion?.trim() || current.graphApiVersion;
-  const loginConfigurationId = input.loginConfigurationId?.trim() || current.loginConfigurationId;
-  const status = appId && appSecret && verifyToken && loginConfigurationId ? "READY" : "DEGRADED";
+  const loginConfigurationId = input.loginConfigurationId === undefined ? current.loginConfigurationId : input.loginConfigurationId.trim();
+  const nextConfig = { ...current, appId, appSecret, verifyToken, graphApiVersion, loginConfigurationId, redirectUri: canonicalUrls.metaRedirect, webhookUrl: canonicalUrls.metaWebhook };
+  const status = deriveMetaPlatformReadiness(nextConfig).status === "READY" ? "READY" : "DEGRADED";
 
   await prisma.$transaction(async (tx) => {
     const existing = await tx.metaPlatformSetting.findFirst({ orderBy: { createdAt: "asc" }, select: { id: true } });
@@ -87,22 +112,86 @@ export async function saveMetaPlatformConfig(input: { appId: string; appSecret?:
 
 export async function testMetaPlatformConfig(adminId: string) {
   const config = await getMetaPlatformConfig();
-  const ready = Boolean(config.appId && config.appSecret && config.verifyToken && config.loginConfigurationId && config.redirectUri === canonicalUrls.metaRedirect);
-  const error = ready ? null : "Configure the Meta App ID, App Secret, Webhook Verify Token, Login Configuration ID, and production OAuth redirect first.";
+  const testedAt = new Date();
+  const graphVersionValid = META_GRAPH_VERSION.test(config.graphApiVersion);
+  let credentialsValid = false;
+  let appIdMatched = false;
+  let error: string | null = null;
+
+  if (!config.appId || !config.appSecret || !graphVersionValid) {
+    error = "Configure a valid Meta App ID, App Secret, and Graph API version before testing the app.";
+  } else {
+    try {
+      const url = new URL(`https://graph.facebook.com/${config.graphApiVersion}/${encodeURIComponent(config.appId)}`);
+      url.searchParams.set("fields", "id");
+      const response = await fetch(url, {
+        method: "GET",
+        headers: { Accept: "application/json", Authorization: `Bearer ${config.appId}|${config.appSecret}` },
+        signal: AbortSignal.timeout(10_000),
+        cache: "no-store",
+      });
+      const body = await response.json().catch(() => ({})) as { id?: string | number; error?: unknown };
+      appIdMatched = String(body.id ?? "") === config.appId;
+      credentialsValid = response.ok && !body.error && appIdMatched;
+      if (!credentialsValid) error = "Meta rejected the configured App ID and App Secret relationship.";
+    } catch {
+      error = "Meta App validation is temporarily unavailable. The saved credentials were not changed.";
+    }
+  }
+
   const existing = await storedMetaSetting();
-  if (existing) await prisma.metaPlatformSetting.update({ where: { id: existing.id }, data: { status: ready ? "READY" : "ERROR", lastApiTestAt: new Date(), lastError: error } });
-  await prisma.auditLog.create({ data: { adminId, action: ready ? "meta.platform_configuration_tested" : "meta.platform_configuration_test_failed" } });
-  return getMetaControlCenter();
+  if (existing) await prisma.metaPlatformSetting.update({ where: { id: existing.id }, data: { status: credentialsValid ? "READY" : "ERROR", lastApiTestAt: testedAt, lastError: error } });
+  await prisma.auditLog.create({ data: { adminId, action: credentialsValid ? "meta.platform_configuration_tested" : "meta.platform_configuration_test_failed" } });
+  return {
+    control: await getMetaControlCenter(),
+    diagnostics: {
+      appIdConfigured: Boolean(config.appId),
+      appSecretConfigured: Boolean(config.appSecret),
+      graphApiVersion: config.graphApiVersion,
+      credentialsValid,
+      appIdMatched,
+      testedAt: testedAt.toISOString(),
+      message: error ?? "Meta confirmed the configured App ID and App Secret relationship.",
+    },
+  };
+}
+
+export async function testMetaWebhookConfiguration(adminId: string) {
+  const config = await getMetaPlatformConfig();
+  const testedAt = new Date();
+  const readiness = deriveMetaPlatformReadiness(config);
+  const latestSignedWebhook = await prisma.webhookEvent.findFirst({
+    where: { signatureValid: true },
+    orderBy: { receivedAt: "desc" },
+    select: { receivedAt: true },
+  });
+  const configured = readiness.webhookConfigured && Boolean(config.verifyToken);
+  const existing = await storedMetaSetting();
+  const error = configured ? null : "Configure the canonical webhook endpoint and Webhook Verify Token before testing webhook configuration.";
+  if (existing) await prisma.metaPlatformSetting.update({ where: { id: existing.id }, data: { lastApiTestAt: testedAt, lastError: error } });
+  await prisma.auditLog.create({ data: { adminId, action: configured ? "meta.webhook_configuration_tested" : "meta.webhook_configuration_test_failed" } });
+  return {
+    control: await getMetaControlCenter(),
+    diagnostics: {
+      callbackUrl: canonicalUrls.metaWebhook,
+      callbackConfigured: readiness.webhookConfigured,
+      verifyTokenConfigured: Boolean(config.verifyToken),
+      configured,
+      lastSignedWebhookAt: latestSignedWebhook?.receivedAt.toISOString() ?? null,
+      inboundWebhookObserved: Boolean(latestSignedWebhook),
+      testedAt: testedAt.toISOString(),
+      message: error ?? (latestSignedWebhook ? "Webhook configuration is ready and a successfully signed inbound webhook has been observed." : "Webhook configuration is ready. No successfully signed inbound webhook has been observed yet."),
+    },
+  };
 }
 
 export async function testMetaOAuthConfiguration(adminId: string) {
   const config = await getMetaPlatformConfig();
+  const readiness = deriveMetaPlatformReadiness(config);
   const productionRedirect = config.redirectUri === canonicalUrls.metaRedirect;
-  const constructible = Boolean(config.appId && config.graphApiVersion && config.redirectUri && new URL(`https://www.facebook.com/${config.graphApiVersion}/dialog/oauth`));
-  const ready = Boolean(config.appId && config.appSecret && config.loginConfigurationId && productionRedirect && constructible);
+  const constructible = Boolean(config.appId && META_GRAPH_VERSION.test(config.graphApiVersion) && config.redirectUri && new URL(`https://www.facebook.com/${config.graphApiVersion}/dialog/oauth`));
+  const ready = readiness.autoConnectStatus === "AUTO_CONNECT_READY" && constructible;
   const error = ready ? null : "OAuth requires App ID, App Secret, Login Configuration ID, business_management plus the Page permissions, and the production redirect URI.";
-  const existing = await storedMetaSetting();
-  if (existing) await prisma.metaPlatformSetting.update({ where: { id: existing.id }, data: { status: ready ? "READY" : "ERROR", lastApiTestAt: new Date(), lastError: error } });
   await prisma.auditLog.create({ data: { adminId, action: ready ? "meta.oauth_configuration_tested" : "meta.oauth_configuration_test_failed" } });
-  return { control: await getMetaControlCenter(), diagnostics: { productionRedirect, loginConfigurationId: Boolean(config.loginConfigurationId), oauthUrlConstructible: constructible, requiredPermissions: [...META_REQUIRED_PERMISSIONS], businessManagementNote: "business_management is required in the Meta Login Configuration for Business Portfolio Page discovery; direct Page access remains compatible when it is absent." } };
+  return { control: await getMetaControlCenter(), diagnostics: { autoConnectStatus: readiness.autoConnectStatus, productionRedirect, loginConfigurationId: Boolean(config.loginConfigurationId), oauthUrlConstructible: constructible, requiredPermissions: [...META_REQUIRED_PERMISSIONS], message: error ?? "Automatic Facebook Login configuration is ready.", businessManagementNote: "business_management is required in the Meta Login Configuration for Business Portfolio Page discovery; direct Page access remains compatible when it is absent." } };
 }

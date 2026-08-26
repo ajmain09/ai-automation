@@ -19,6 +19,16 @@ function graphResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
 
+function graphRequest(index: number) {
+  const [input, init] = fetchMock.mock.calls[index] as [URL | string, RequestInit | undefined];
+  return {
+    url: new URL(input.toString()),
+    init: init ?? {},
+    headers: new Headers(init?.headers),
+    form: new URLSearchParams(typeof init?.body === "string" ? init.body : ""),
+  };
+}
+
 const validDebug = {
   isValid: true, appId: "app-id", type: "USER", userId: "user-1", expiresAt: null, dataAccessExpiresAt: null,
   scopes: ["pages_show_list", "pages_read_engagement", "pages_manage_metadata", "pages_messaging"], granularScopes: [],
@@ -34,11 +44,35 @@ describe("Meta token introspection", () => {
   it("accepts a valid USER token and returns only safe debug fields", async () => {
     fetchMock.mockResolvedValueOnce(graphResponse({ data: { is_valid: true, app_id: "app-id", type: "USER", user_id: "user-1", scopes: ["pages_show_list"], granular_scopes: [{ scope: "pages_show_list", target_ids: ["PAGE_123"] }] } }));
     const { inspectMetaToken } = await import("@/services/meta/service");
-    await expect(inspectMetaToken("USER_TOKEN")).resolves.toMatchObject({ isValid: true, appId: "app-id", type: "USER", granularScopes: [{ scope: "pages_show_list", targetIds: ["PAGE_123"] }] });
-    const requestUrl = new URL(fetchMock.mock.calls[0][0].toString());
-    expect(requestUrl.pathname).toBe("/v23.0/debug_token");
-    expect(requestUrl.searchParams.get("input_token")).toBe("USER_TOKEN");
-    expect(requestUrl.searchParams.get("access_token")).toBe("app-id|app-secret");
+    const result = await inspectMetaToken("USER_TOKEN");
+    expect(result).toMatchObject({ isValid: true, appId: "app-id", type: "USER", granularScopes: [{ scope: "pages_show_list", targetIds: ["PAGE_123"] }] });
+    const request = graphRequest(0);
+    expect(request.url.pathname).toBe("/v23.0/debug_token");
+    expect(request.url.search).toBe("");
+    expect(request.init.method).toBe("POST");
+    expect(request.headers.get("authorization")).toBe("Bearer app-id|app-secret");
+    expect(request.headers.get("content-type")).toBe("application/x-www-form-urlencoded");
+    expect(request.form.get("input_token")).toBe("USER_TOKEN");
+    expect(request.form.get("fields")).toContain("granular_scopes");
+    expect(JSON.stringify(result)).not.toContain("USER_TOKEN");
+    expect(JSON.stringify(result)).not.toContain("app-secret");
+  });
+
+  it("exchanges an OAuth code with a POST form and keeps credentials out of the URL", async () => {
+    fetchMock.mockResolvedValueOnce(graphResponse({ access_token: "EXCHANGED_USER_TOKEN" }));
+    const { exchangeCode } = await import("@/services/meta/service");
+    await expect(exchangeCode("OAUTH_CODE", "https://example.test/callback")).resolves.toEqual({ access_token: "EXCHANGED_USER_TOKEN" });
+    const request = graphRequest(0);
+    expect(request.url.pathname).toBe("/v23.0/oauth/access_token");
+    expect(request.url.search).toBe("");
+    expect(request.init.method).toBe("POST");
+    expect(request.headers.get("content-type")).toBe("application/x-www-form-urlencoded");
+    expect(request.form.get("client_id")).toBe("app-id");
+    expect(request.form.get("client_secret")).toBe("app-secret");
+    expect(request.form.get("redirect_uri")).toBe("https://example.test/callback");
+    expect(request.form.get("code")).toBe("OAUTH_CODE");
+    expect(request.url.toString()).not.toContain("app-secret");
+    expect(request.url.toString()).not.toContain("OAUTH_CODE");
   });
 
   it("accepts a valid business/system token type", async () => {
@@ -93,19 +127,35 @@ describe("Meta Page discovery", () => {
   });
 
   it("follows pagination and never logs a credential value", async () => {
-    fetchMock.mockResolvedValueOnce(graphResponse({ data: [{ id: "123", name: "Page A" }], paging: { next: "https://graph.facebook.com/v23.0/me/accounts?after=cursor" } })).mockResolvedValueOnce(graphResponse({ data: [{ id: "456", name: "Page B", access_token: "TOKEN_B" }] }));
+    fetchMock
+      .mockResolvedValueOnce(graphResponse({ data: [{ id: "123", name: "Page A" }], paging: { next: "https://graph.facebook.com/v23.0/me/accounts?after=cursor&access_token=LEAKED_PAGINATION_TOKEN&appsecret_proof=LEAKED_PROOF" } }))
+      .mockResolvedValueOnce(graphResponse({ data: [{ id: "456", name: "Page B", access_token: "TOKEN_B" }] }))
+      .mockResolvedValueOnce(graphResponse({ data: [] }));
     const { discoverPages } = await import("@/services/meta/service");
     await expect(discoverPages("USER_TOKEN")).resolves.toEqual([{ id: "123", name: "Page A" }, { id: "456", name: "Page B", access_token: "TOKEN_B" }]);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    for (let index = 0; index < fetchMock.mock.calls.length; index += 1) {
+      const request = graphRequest(index);
+      expect(request.url.searchParams.has("access_token")).toBe(false);
+      expect(request.url.searchParams.has("appsecret_proof")).toBe(false);
+      expect(request.url.toString()).not.toContain("USER_TOKEN");
+      expect(request.url.toString()).not.toContain("LEAKED_PAGINATION_TOKEN");
+      expect(request.headers.get("authorization")).toBe("Bearer USER_TOKEN");
+    }
     expect(JSON.stringify(infoMock.mock.calls)).not.toContain("TOKEN_B");
     expect(JSON.stringify(infoMock.mock.calls)).not.toContain("USER_TOKEN");
+    expect(JSON.stringify(infoMock.mock.calls)).not.toContain("LEAKED_PAGINATION_TOKEN");
   });
 
   it("resolves a missing Page credential server-side", async () => {
     fetchMock.mockResolvedValueOnce(graphResponse({ id: "123", access_token: "RESOLVED_TOKEN" }));
     const { resolvePageAccessToken } = await import("@/services/meta/service");
     await expect(resolvePageAccessToken("USER_TOKEN", { id: "123", name: "Page A" })).resolves.toBe("RESOLVED_TOKEN");
-    expect(fetchMock.mock.calls[0][0].toString()).not.toContain("RESOLVED_TOKEN");
+    const request = graphRequest(0);
+    expect(request.url.searchParams.has("access_token")).toBe(false);
+    expect(request.url.toString()).not.toContain("USER_TOKEN");
+    expect(request.url.toString()).not.toContain("RESOLVED_TOKEN");
+    expect(request.headers.get("authorization")).toBe("Bearer USER_TOKEN");
   });
 
   it("reproduces the production bug and reports a merged Page instead of NO_PAGES", async () => {
@@ -144,6 +194,10 @@ describe("Meta Page discovery", () => {
       .mockResolvedValueOnce(graphResponse({ data: [] }));
     const { discoverPages } = await import("@/services/meta/service");
     await expect(discoverPages("USER_TOKEN", { ...validDebug, scopes: [...validDebug.scopes, "business_management"], granularScopes: [{ scope: "business_management", targetIds: ["BUSINESS_123"] }] })).resolves.toEqual([{ id: "PAGE_123", name: "Karseell Bangladesh", access_token: "PAGE_TOKEN" }]);
+    expect(fetchMock).toHaveBeenCalledTimes(7);
+    expect(graphRequest(2).url.pathname).toBe("/v23.0/BUSINESS_123");
+    expect(graphRequest(3).url.pathname).toBe("/v23.0/me/businesses");
+    expect(graphRequest(4).url.pathname).toBe("/v23.0/BUSINESS_123/owned_pages");
   });
 
   it("does not let business_management absence break direct Page discovery", async () => {
@@ -172,5 +226,26 @@ describe("Meta Page discovery", () => {
     expect(result.pages).toEqual([]);
     expect(result.diagnostic.diagnostics.granularTargetDiagnostics).toEqual([expect.objectContaining({ targetId: "ASSET_123", associatedScopes: ["pages_show_list"], verification: "TARGET_UNRESOLVED", metaErrorCode: 100, metaErrorSubcode: 33 })]);
     expect(JSON.stringify(result)).not.toContain("USER_TOKEN");
+    expect(fetchMock).toHaveBeenCalledTimes(7);
+    expect(graphRequest(5).url.pathname).toBe("/v23.0/ASSET_123");
+    expect(graphRequest(6).url.pathname).toBe("/v23.0/me/businesses");
+  });
+
+  it("retains the first safe Meta error when the identity-only fallback is invalid", async () => {
+    fetchMock
+      .mockResolvedValueOnce(graphResponse({ data: { is_valid: true, app_id: "app-id", type: "USER", user_id: "user-1", scopes: validDebug.scopes, granular_scopes: [{ scope: "pages_show_list", target_ids: ["PAGE_UNKNOWN"] }] } }))
+      .mockResolvedValueOnce(graphResponse({ id: "user-1", name: "Admin" }))
+      .mockResolvedValueOnce(graphResponse({ data: validDebug.scopes.map((permission) => ({ permission, status: "granted" })) }))
+      .mockResolvedValueOnce(graphResponse({ data: [] }))
+      .mockResolvedValueOnce(graphResponse({ data: [] }))
+      .mockResolvedValueOnce(graphResponse({ error: { message: "Field access_token is unavailable", code: 100, type: "OAuthException", error_subcode: 999 } }, 400))
+      .mockResolvedValueOnce(graphResponse({ id: null, name: null }));
+    const { runPageAccessDiagnostic } = await import("@/services/meta/service");
+    const result = await runPageAccessDiagnostic("USER_TOKEN");
+    expect(result.pages).toEqual([]);
+    expect(result.diagnostic.diagnostics.granularTargetDiagnostics).toEqual([expect.objectContaining({ targetId: "PAGE_UNKNOWN", verification: "TARGET_UNRESOLVED", metaErrorCode: 100, metaErrorSubcode: 999, metaErrorType: "OAuthException" })]);
+    expect(fetchMock).toHaveBeenCalledTimes(7);
+    expect(graphRequest(5).url.searchParams.get("fields")).toContain("access_token");
+    expect(graphRequest(6).url.searchParams.get("fields")).toBe("id,name,tasks");
   });
 });
