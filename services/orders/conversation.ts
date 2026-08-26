@@ -3,7 +3,9 @@ import { prisma } from "@/lib/db/prisma";
 import { isClearConfirmation } from "@/services/orders/engine";
 import { confirmDraft, cancelConfirmedOrder, updateDraft } from "@/services/orders/service";
 
-export async function applyOrderSignal(input: { pageId: string; customerId: string; text: string; result: AiResponse; requiredFields: string[]; currency: string; countryCode: string; configurationVersion?: number }) {
+type OrderSignalResult = { reply: string; orderTruth?: { reference: string; status: string; productName: string | null; variantDetails: { sku: string; size: string | null; color: string | null }; unitPrice: number; total: number; quantity: number | null; currency: string | null } } | null;
+
+export async function applyOrderSignal(input: { pageId: string; customerId: string; text: string; result: AiResponse; requiredFields: string[]; currency: string; countryCode: string; configurationVersion?: number }): Promise<OrderSignalResult> {
   const cancellation = /^(cancel|cancel\s*order|cancel\s*kore\s*den|order\s*ta\s*bad\s*den|no\s*longer\s*need|lagbe\s*na|\u09ac\u09be\u09a4\u09bf\u09b2)[.!\s]*$/iu.test(input.text.trim());
   const completed = await prisma.orderSession.findFirst({ where: { pageId: input.pageId, customerId: input.customerId, status: "COMPLETED", orderId: { not: null } }, orderBy: { updatedAt: "desc" } });
   if (cancellation && completed?.orderId) {
@@ -38,7 +40,19 @@ export async function applyOrderSignal(input: { pageId: string; customerId: stri
   if (!truth || !currentVariant) return { reply: "That product or variant is no longer available. Please choose an active product again." };
   try {
     const order = await confirmDraft({ pageId: input.pageId, customerId: input.customerId, product: { id: truth.id, name: truth.name, active: truth.active, variant: { id: currentVariant.id, sku: currentVariant.sku, size: currentVariant.size, color: currentVariant.color, active: currentVariant.active, price: Number(currentVariant.currentPrice) } }, requiredFields: input.requiredFields, currency: input.currency, configurationVersion: input.configurationVersion, countryCode: input.countryCode });
-    return { reply: `Your order is confirmed. Order reference: ${order.id}.` };
+    return {
+      reply: `Your order is confirmed. Order reference: ${order.id}. Product: ${order.productName ?? truth.name}. Variant: ${[currentVariant.sku, currentVariant.size, currentVariant.color].filter(Boolean).join(" / ")}. Quantity: ${order.quantity ?? 0}. Unit price: ${order.unitPrice?.toString() ?? currentVariant.currentPrice.toString()} ${order.currency ?? input.currency}. Total: ${order.total?.toString() ?? "0"} ${order.currency ?? input.currency}.`,
+      orderTruth: {
+        reference: order.id,
+        status: order.status,
+        productName: order.productName,
+        variantDetails: { sku: currentVariant.sku, size: currentVariant.size, color: currentVariant.color },
+        unitPrice: Number(order.unitPrice ?? currentVariant.currentPrice),
+        total: Number(order.total ?? 0),
+        quantity: order.quantity,
+        currency: order.currency,
+      },
+    };
   } catch (error) {
     return { reply: error instanceof Error && /price changed/i.test(error.message) ? "The product price changed. I updated the draft with the current price; please confirm again." : "I still need the remaining required details before I can confirm the order." };
   }
